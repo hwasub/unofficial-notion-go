@@ -14,6 +14,7 @@ import (
 
 type fakePageClient struct {
 	getPageCalls        []string
+	getPageOptions      []notionapi.PageOptions
 	getPageRecordMap    map[string]any
 	getPageErr          error
 	collectionCalls     []collectionCall
@@ -28,8 +29,9 @@ type collectionCall struct {
 	SpaceID      string
 }
 
-func (f *fakePageClient) GetPage(_ context.Context, pageID string, _ notionapi.PageOptions) (map[string]any, error) {
+func (f *fakePageClient) GetPage(_ context.Context, pageID string, opts notionapi.PageOptions) (map[string]any, error) {
 	f.getPageCalls = append(f.getPageCalls, pageID)
+	f.getPageOptions = append(f.getPageOptions, opts)
 	if f.getPageErr != nil {
 		return nil, f.getPageErr
 	}
@@ -121,6 +123,21 @@ func TestFetchSnapshotRejectsMaxBlocks(t *testing.T) {
 	httpErr, ok := AsHTTPError(err)
 	if !ok || httpErr.StatusCode != 413 || httpErr.Code != "max_blocks_exceeded" {
 		t.Fatalf("error = %#v", err)
+	}
+}
+
+func TestFetchSnapshotPassesMaxBlocksToPageClient(t *testing.T) {
+	rootID := "1ad6e61c-f824-80c9-a6c4-d251043457d3"
+	client := &fakePageClient{getPageRecordMap: recordMap(pageBlock(rootID, "Root", nil))}
+	_, err := FetchSnapshot(context.Background(), FetchRequest{PageID: rootID}, testLimitsWithMaxBlocks(17), FetchOptions{Client: client, Now: fixedNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(client.getPageOptions) != 1 {
+		t.Fatalf("get page options = %#v", client.getPageOptions)
+	}
+	if client.getPageOptions[0].MaxBlocks != 17 {
+		t.Fatalf("MaxBlocks passed to GetPage = %d, want 17", client.getPageOptions[0].MaxBlocks)
 	}
 }
 
@@ -263,6 +280,39 @@ func TestFetchSnapshotRepairsCollectionQueries(t *testing.T) {
 	}
 	if title := GetTitle(snapshot.Page.RecordMap.Block[rowID]); title != "Card" {
 		t.Fatalf("merged row title = %q", title)
+	}
+}
+
+func TestFetchSnapshotRejectsCollectionRepairOverMaxBlocks(t *testing.T) {
+	rootID := "1ad6e61c-f824-80c9-a6c4-d251043457d3"
+	collectionBlockID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	collectionID := "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+	viewID := "cccccccc-cccc-cccc-cccc-cccccccccccc"
+	rowID := "dddddddd-dddd-dddd-dddd-dddddddddddd"
+	client := &fakePageClient{
+		getPageRecordMap: map[string]any{
+			"block": map[string]any{
+				rootID:            pageBlock(rootID, "Root", []string{collectionBlockID})[1],
+				collectionBlockID: boxed(map[string]any{"id": collectionBlockID, "type": "collection_view", "collection_id": collectionID, "view_ids": []any{viewID}}),
+			},
+			"collection": map[string]any{},
+			"collection_view": map[string]any{
+				viewID: boxed(map[string]any{"id": viewID, "type": "table", "name": "Table", "format": map[string]any{}}),
+			},
+			"collection_query": map[string]any{
+				collectionID: map[string]any{viewID: map[string]any{"collection_group_results": map[string]any{"blockIds": []any{rowID}}}},
+			},
+			"signed_urls": map[string]any{},
+		},
+		collectionData: map[string]any{
+			"result":    map[string]any{"reducerResults": map[string]any{}},
+			"recordMap": recordMap(pageBlock(rowID, "Card", nil)),
+		},
+	}
+	_, err := FetchSnapshot(context.Background(), FetchRequest{PageID: rootID}, testLimitsWithMaxBlocks(2), FetchOptions{Client: client, Now: fixedNow})
+	httpErr, ok := AsHTTPError(err)
+	if !ok || httpErr.StatusCode != http.StatusRequestEntityTooLarge || httpErr.Code != "max_blocks_exceeded" {
+		t.Fatalf("error = %#v", err)
 	}
 }
 

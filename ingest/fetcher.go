@@ -84,9 +84,16 @@ func FetchSnapshot(ctx context.Context, request FetchRequest, limits RequestLimi
 		ChunkLimit:              100,
 		CollectionReducerLimit:  999,
 		ThrowOnCollectionErrors: false,
+		MaxBlocks:               limits.MaxBlocks,
 	})
 	if err == nil {
-		err = repairCollectionQueries(pageCtx, client, recordMap, log)
+		err = rejectRecordMapBlockLimit(recordMap, limits.MaxBlocks)
+	}
+	if err == nil {
+		err = repairCollectionQueries(pageCtx, client, recordMap, limits.MaxBlocks, log)
+	}
+	if err == nil {
+		err = rejectRecordMapBlockLimit(recordMap, limits.MaxBlocks)
 	}
 	if err != nil {
 		mapped := mapNotionError(err)
@@ -117,9 +124,6 @@ func FetchSnapshot(ctx context.Context, request FetchRequest, limits RequestLimi
 	}
 
 	blockCount := recordMapBlockCount(recordMap)
-	if blockCount > limits.MaxBlocks {
-		return nil, NewHTTPError("max block limit exceeded", 413, "max_blocks_exceeded")
-	}
 	normalized := NormalizeRecordMap(recordMap)
 	rootBlock := normalized.Block[rootPageID]
 	if rootBlock == nil {
@@ -197,7 +201,7 @@ func mapNotionError(cause error) *HTTPError {
 	}
 	var upstream *notionapi.HTTPError
 	if errors.As(cause, &upstream) {
-		if upstream.Code == notionapi.ErrorCodeMaxResponseBytesExceeded {
+		if upstream.Code == notionapi.ErrorCodeMaxResponseBytesExceeded || upstream.Code == notionapi.ErrorCodeMaxBlocksExceeded {
 			return &HTTPError{
 				StatusCode:   http.StatusRequestEntityTooLarge,
 				Code:         upstream.Code,
@@ -235,4 +239,11 @@ func recordMapBlockIDs(recordMap map[string]any) []string {
 		ids = append(ids, id)
 	}
 	return ids
+}
+
+func rejectRecordMapBlockLimit(recordMap map[string]any, maxBlocks int) error {
+	if maxBlocks > 0 && recordMapBlockCount(recordMap) > maxBlocks {
+		return NewHTTPError("max block limit exceeded", http.StatusRequestEntityTooLarge, "max_blocks_exceeded")
+	}
+	return nil
 }

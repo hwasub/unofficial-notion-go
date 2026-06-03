@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hwasub/unofficial-notion-go/internal/notionid"
@@ -87,6 +88,7 @@ type PageOptions struct {
 	ThrowOnCollectionErrors bool // return on the first collection error instead of skipping it
 	CollectionReducerLimit  int  // maximum rows requested per collection reducer (defaults to 999)
 	FetchRelationPages      bool // reserved: fetch pages referenced by relation properties
+	MaxBlocks               int  // optional maximum block records allowed while assembling the page
 }
 
 // CollectionOptions controls a single GetCollectionData query. The zero value is
@@ -197,6 +199,9 @@ func (c *Client) GetPage(ctx context.Context, pageID string, opts PageOptions) (
 	ensureMap(recordMap, "notion_user")
 	recordMap["collection_query"] = map[string]any{}
 	recordMap["signed_urls"] = map[string]any{}
+	if err := enforceMaxBlocks(recordMap, opts.MaxBlocks); err != nil {
+		return nil, err
+	}
 
 	if opts.FetchMissingBlocks {
 		for {
@@ -210,12 +215,18 @@ func (c *Client) GetPage(ctx context.Context, pageID string, opts PageOptions) (
 			if len(pending) == 0 {
 				break
 			}
+			if opts.MaxBlocks > 0 && len(blocks)+len(pending) > opts.MaxBlocks {
+				return nil, maxBlocksExceededError(opts.MaxBlocks)
+			}
 			chunk, err := c.GetBlocks(ctx, pending)
 			if err != nil {
 				return nil, err
 			}
 			before := len(blocks)
 			newBlocks := notionrecordmap.AsMap(notionrecordmap.AsMap(chunk["recordMap"])["block"])
+			if err := enforceMapMergeMaxBlocks(blocks, newBlocks, opts.MaxBlocks); err != nil {
+				return nil, err
+			}
 			mergeMap(blocks, newBlocks)
 			if len(blocks) == before {
 				// The upstream returned none of the pending blocks (not found,
@@ -229,30 +240,29 @@ func (c *Client) GetPage(ctx context.Context, pageID string, opts PageOptions) (
 	contentBlockIDs := notionrecordmap.GetPageContentBlockIDs(recordMap, rootPageID)
 	if opts.FetchCollections {
 		instances := collectionInstances(recordMap, contentBlockIDs)
-		for _, instance := range instances {
-			collectionViews := notionrecordmap.AsMap(recordMap["collection_view"])
-			collectionView := mapValue(collectionViews[instance.ViewID], "value")
-			data, err := c.GetCollectionData(ctx, instance.CollectionID, instance.ViewID, collectionView, CollectionOptions{
-				Limit:   opts.CollectionReducerLimit,
-				SpaceID: instance.SpaceID,
-			})
-			if err != nil {
+		results := c.fetchCollections(ctx, recordMap, instances, opts)
+		for _, result := range results {
+			if result.Err != nil {
 				if opts.ThrowOnCollectionErrors {
-					return nil, err
+					return nil, result.Err
 				}
 				continue
 			}
-			mergeRecordMap(recordMap, notionrecordmap.AsMap(data["recordMap"]))
-			result := notionrecordmap.AsMap(data["result"])
-			reducerResults := result["reducerResults"]
+			sourceRecordMap := notionrecordmap.AsMap(result.Data["recordMap"])
+			if err := enforceRecordMapMergeMaxBlocks(recordMap, sourceRecordMap, opts.MaxBlocks); err != nil {
+				return nil, err
+			}
+			mergeRecordMap(recordMap, sourceRecordMap)
+			resultMap := notionrecordmap.AsMap(result.Data["result"])
+			reducerResults := resultMap["reducerResults"]
 			if reducerResults != nil {
 				collectionQuery := ensureMap(recordMap, "collection_query")
-				byCollection := notionrecordmap.AsMap(collectionQuery[instance.CollectionID])
+				byCollection := notionrecordmap.AsMap(collectionQuery[result.Instance.CollectionID])
 				if byCollection == nil {
 					byCollection = map[string]any{}
-					collectionQuery[instance.CollectionID] = byCollection
+					collectionQuery[result.Instance.CollectionID] = byCollection
 				}
-				byCollection[instance.ViewID] = reducerResults
+				byCollection[result.Instance.ViewID] = reducerResults
 			}
 		}
 	}
@@ -641,6 +651,55 @@ type collectionInstance struct {
 	SpaceID      string
 }
 
+type collectionFetchResult struct {
+	Instance collectionInstance
+	Data     map[string]any
+	Err      error
+}
+
+func (c *Client) fetchCollections(ctx context.Context, recordMap map[string]any, instances []collectionInstance, opts PageOptions) []collectionFetchResult {
+	results := make([]collectionFetchResult, len(instances))
+	if len(instances) == 0 {
+		return results
+	}
+	workerCount := opts.Concurrency
+	if workerCount <= 0 {
+		workerCount = 1
+	}
+	if workerCount > len(instances) {
+		workerCount = len(instances)
+	}
+
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for index := range jobs {
+				instance := instances[index]
+				collectionViews := notionrecordmap.AsMap(recordMap["collection_view"])
+				collectionView := mapValue(collectionViews[instance.ViewID], "value")
+				data, err := c.GetCollectionData(ctx, instance.CollectionID, instance.ViewID, collectionView, CollectionOptions{
+					Limit:   opts.CollectionReducerLimit,
+					SpaceID: instance.SpaceID,
+				})
+				results[index] = collectionFetchResult{
+					Instance: instance,
+					Data:     data,
+					Err:      err,
+				}
+			}
+		}()
+	}
+	for index := range instances {
+		jobs <- index
+	}
+	close(jobs)
+	wg.Wait()
+	return results
+}
+
 func collectionInstances(recordMap map[string]any, contentBlockIDs []string) []collectionInstance {
 	blocks := notionrecordmap.AsMap(recordMap["block"])
 	out := []collectionInstance{}
@@ -712,6 +771,47 @@ func mergeRecordMap(target map[string]any, source map[string]any) {
 		}
 		targetMap := ensureMap(target, key)
 		mergeMap(targetMap, sourceMap)
+	}
+}
+
+func enforceMaxBlocks(recordMap map[string]any, maxBlocks int) error {
+	if maxBlocks <= 0 {
+		return nil
+	}
+	if len(notionrecordmap.AsMap(recordMap["block"])) > maxBlocks {
+		return maxBlocksExceededError(maxBlocks)
+	}
+	return nil
+}
+
+func enforceRecordMapMergeMaxBlocks(target map[string]any, source map[string]any, maxBlocks int) error {
+	if maxBlocks <= 0 || source == nil {
+		return nil
+	}
+	return enforceMapMergeMaxBlocks(notionrecordmap.AsMap(target["block"]), notionrecordmap.AsMap(source["block"]), maxBlocks)
+}
+
+func enforceMapMergeMaxBlocks(target map[string]any, source map[string]any, maxBlocks int) error {
+	if maxBlocks <= 0 || source == nil {
+		return nil
+	}
+	count := len(target)
+	for key := range source {
+		if target == nil || target[key] == nil {
+			count++
+		}
+		if count > maxBlocks {
+			return maxBlocksExceededError(maxBlocks)
+		}
+	}
+	return nil
+}
+
+func maxBlocksExceededError(maxBlocks int) *HTTPError {
+	return &HTTPError{
+		StatusCode: http.StatusRequestEntityTooLarge,
+		Code:       ErrorCodeMaxBlocksExceeded,
+		Message:    fmt.Sprintf("max block limit exceeded (%d)", maxBlocks),
 	}
 }
 

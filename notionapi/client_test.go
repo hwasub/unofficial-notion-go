@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -257,5 +258,100 @@ func TestGetCollectionDataBuildsGroupedBoardReducers(t *testing.T) {
 	uncategorized := groupSortPreference[1].(map[string]any)["value"].(map[string]any)
 	if _, ok := uncategorized["value"]; ok {
 		t.Fatalf("uncategorized groupSortPreference value should be omitted, got %#v", uncategorized)
+	}
+}
+
+func TestGetPageFetchesCollectionsConcurrently(t *testing.T) {
+	rootID := "1ad6e61c-f824-80c9-a6c4-d251043457d3"
+	collectionBlock1ID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	collectionBlock2ID := "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+	collection1ID := "cccccccc-cccc-cccc-cccc-cccccccccccc"
+	collection2ID := "dddddddd-dddd-dddd-dddd-dddddddddddd"
+	view1ID := "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+	view2ID := "ffffffff-ffff-ffff-ffff-ffffffffffff"
+
+	var activeQueryCollections int32
+	var maxActiveQueryCollections int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/loadPageChunk":
+			_, _ = w.Write([]byte(`{
+				"recordMap": {
+					"block": {
+						"` + rootID + `": {"value": {"id": "` + rootID + `", "type": "page", "content": ["` + collectionBlock1ID + `", "` + collectionBlock2ID + `"]}},
+						"` + collectionBlock1ID + `": {"value": {"id": "` + collectionBlock1ID + `", "type": "collection_view", "collection_id": "` + collection1ID + `", "view_ids": ["` + view1ID + `"]}},
+						"` + collectionBlock2ID + `": {"value": {"id": "` + collectionBlock2ID + `", "type": "collection_view", "collection_id": "` + collection2ID + `", "view_ids": ["` + view2ID + `"]}}
+					},
+					"collection": {},
+					"collection_view": {
+						"` + view1ID + `": {"value": {"id": "` + view1ID + `", "type": "table", "format": {}}},
+						"` + view2ID + `": {"value": {"id": "` + view2ID + `", "type": "table", "format": {}}}
+					}
+				}
+			}`))
+		case "/queryCollection":
+			current := atomic.AddInt32(&activeQueryCollections, 1)
+			updateMaxInt32(&maxActiveQueryCollections, current)
+			time.Sleep(50 * time.Millisecond)
+			atomic.AddInt32(&activeQueryCollections, -1)
+			_, _ = w.Write([]byte(`{"recordMap":{"block":{}},"result":{"reducerResults":{"collection_group_results":{"blockIds":[]}}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := New(WithAPIBaseURL(server.URL))
+	if _, err := client.GetPage(context.Background(), rootID, PageOptions{FetchCollections: true, Concurrency: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if got := atomic.LoadInt32(&maxActiveQueryCollections); got < 2 {
+		t.Fatalf("max concurrent queryCollection calls = %d, want at least 2", got)
+	}
+}
+
+func TestGetPageRejectsMaxBlocksBeforeFetchingMissingBlocks(t *testing.T) {
+	rootID := "1ad6e61c-f824-80c9-a6c4-d251043457d3"
+	child1ID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	child2ID := "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+	var syncRecordCalls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/loadPageChunk":
+			_, _ = w.Write([]byte(`{
+				"recordMap": {
+					"block": {
+						"` + rootID + `": {"value": {"id": "` + rootID + `", "type": "page", "content": ["` + child1ID + `", "` + child2ID + `"]}}
+					}
+				}
+			}`))
+		case "/syncRecordValuesMain":
+			atomic.AddInt32(&syncRecordCalls, 1)
+			_, _ = w.Write([]byte(`{"recordMap":{"block":{}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := New(WithAPIBaseURL(server.URL))
+	_, err := client.GetPage(context.Background(), rootID, PageOptions{FetchMissingBlocks: true, MaxBlocks: 1})
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusRequestEntityTooLarge || httpErr.Code != ErrorCodeMaxBlocksExceeded {
+		t.Fatalf("error = %#v", err)
+	}
+	if got := atomic.LoadInt32(&syncRecordCalls); got != 0 {
+		t.Fatalf("syncRecordValuesMain calls = %d, want 0", got)
+	}
+}
+
+func updateMaxInt32(target *int32, value int32) {
+	for {
+		current := atomic.LoadInt32(target)
+		if value <= current || atomic.CompareAndSwapInt32(target, current, value) {
+			return
+		}
 	}
 }

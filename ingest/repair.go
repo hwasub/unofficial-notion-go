@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"context"
+	"net/http"
 	"sort"
 	"strings"
 
@@ -10,7 +11,7 @@ import (
 	"github.com/hwasub/unofficial-notion-go/notionapi"
 )
 
-func repairCollectionQueries(ctx context.Context, client PageClient, recordMap map[string]any, log func(string, map[string]any)) error {
+func repairCollectionQueries(ctx context.Context, client PageClient, recordMap map[string]any, maxBlocks int, log func(string, map[string]any)) error {
 	blocks := notionrecordmap.AsMap(recordMap["block"])
 	if blocks == nil {
 		return nil
@@ -66,7 +67,11 @@ func repairCollectionQueries(ctx context.Context, client PageClient, recordMap m
 				})
 				continue
 			}
-			mergeRawRecordMap(recordMap, notionrecordmap.AsMap(collectionData["recordMap"]))
+			sourceRecordMap := notionrecordmap.AsMap(collectionData["recordMap"])
+			if err := rejectMergedRecordMapBlockLimit(recordMap, sourceRecordMap, maxBlocks); err != nil {
+				return err
+			}
+			mergeRawRecordMap(recordMap, sourceRecordMap)
 			reducerResults := notionrecordmap.AsMap(notionrecordmap.AsMap(collectionData["result"])["reducerResults"])
 			if reducerResults == nil {
 				if raw := notionrecordmap.AsMap(collectionData["result"])["reducerResults"]; raw != nil {
@@ -84,6 +89,23 @@ func repairCollectionQueries(ctx context.Context, client PageClient, recordMap m
 				previousQuery[key] = value
 			}
 			byCollection[viewID] = previousQuery
+		}
+	}
+	return nil
+}
+
+func rejectMergedRecordMapBlockLimit(target map[string]any, source map[string]any, maxBlocks int) error {
+	if maxBlocks <= 0 || source == nil {
+		return nil
+	}
+	targetBlocks := notionrecordmap.AsMap(target["block"])
+	count := len(targetBlocks)
+	for key := range notionrecordmap.AsMap(source["block"]) {
+		if targetBlocks == nil || targetBlocks[key] == nil {
+			count++
+		}
+		if count > maxBlocks {
+			return NewHTTPError("max block limit exceeded", http.StatusRequestEntityTooLarge, "max_blocks_exceeded")
 		}
 	}
 	return nil

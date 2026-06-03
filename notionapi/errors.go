@@ -7,9 +7,13 @@ import (
 	"time"
 )
 
-// ErrorCodeMaxResponseBytesExceeded marks a locally enforced response-size
-// limit failure.
-const ErrorCodeMaxResponseBytesExceeded = "max_response_bytes_exceeded"
+// Local error codes for limits enforced by this client.
+const (
+	// ErrorCodeMaxResponseBytesExceeded marks a response-size limit failure.
+	ErrorCodeMaxResponseBytesExceeded = "max_response_bytes_exceeded"
+	// ErrorCodeMaxBlocksExceeded marks a page block-count limit failure.
+	ErrorCodeMaxBlocksExceeded = "max_blocks_exceeded"
+)
 
 // HTTPError reports a non-2xx response from the Notion API or a local response
 // size failure. Fetch returns it so callers can branch on the HTTP status and
