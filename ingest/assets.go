@@ -6,8 +6,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/hwasub/unofficial-notion-go/internal/notionid"
 	"github.com/hwasub/unofficial-notion-go/internal/notionrecordmap"
-	"github.com/hwasub/unofficial-notion-go/notionid"
 )
 
 type blockAsset struct {

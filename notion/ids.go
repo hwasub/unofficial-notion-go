@@ -227,10 +227,6 @@ func stringValue(value any) string {
 // 8-4-4-4-12 UUID form. It lowercases the input, strips existing hyphens, and
 // reinserts them; values that are not exactly 32 hex characters after stripping
 // are returned trimmed but otherwise unchanged.
-//
-// This is a self-contained copy kept so the renderer and client layer do not
-// depend on the notionid package. For general-purpose Notion ID parsing
-// (extracting IDs from URLs, etc.) use the notionid package instead.
 func NormalizeID(value string) string {
 	value = strings.ToLower(strings.ReplaceAll(strings.TrimSpace(value), "-", ""))
 	if len(value) != 32 {

@@ -1,10 +1,3 @@
-// Package notionapi is a client for Notion's private (unofficial) web API. It
-// authenticates with a token_v2 cookie and exposes the loadPageChunk,
-// queryCollection, syncRecordValuesMain, and getSignedFileUrls endpoints used to
-// fetch and assemble a page's record map. Construct a Client with New and tune it
-// with the With* options; the high-level GetPage method drives the lower-level
-// calls to produce a complete record map, optionally fetching missing blocks,
-// resolving collection data, and signing file URLs.
 package notionapi
 
 import (
@@ -18,8 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hwasub/unofficial-notion-go/internal/notionid"
 	"github.com/hwasub/unofficial-notion-go/internal/notionrecordmap"
-	"github.com/hwasub/unofficial-notion-go/notionid"
 )
 
 // defaultMaxResponseBytes caps how many bytes Fetch will read from a single

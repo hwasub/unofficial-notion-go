@@ -5,9 +5,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/hwasub/unofficial-notion-go/internal/notionid"
 	"github.com/hwasub/unofficial-notion-go/internal/notionrecordmap"
 	"github.com/hwasub/unofficial-notion-go/notionapi"
-	"github.com/hwasub/unofficial-notion-go/notionid"
 )
 
 func repairCollectionQueries(ctx context.Context, client PageClient, recordMap map[string]any, log func(string, map[string]any)) error {

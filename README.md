@@ -19,7 +19,7 @@ This library is intended to provide a Go-native public Notion page workflow:
 ## Install
 
 ```sh
-go get github.com/hwasub/unofficial-notion-go/ingest github.com/hwasub/unofficial-notion-go/notion
+go get github.com/hwasub/unofficial-notion-go
 ```
 
 Requires Go 1.25 or newer.
@@ -39,11 +39,17 @@ and compliance with Notion's terms.
 
 ## Packages
 
-- `notionapi`: low-level unofficial Notion web API client.
-- `notionid`: Notion page and block ID parsing helpers.
-- `ingest`: snapshot fetch, normalization, asset discovery, limits, and errors.
-- `notion`: safe static HTML renderer plus snapshot and render warning types.
-- `cache`: small byte-budgeted cache used by the renderer cache.
+The module exposes three public packages, layered low to high:
+
+- `notionapi`: low-level client for Notion's private web API — authenticate,
+  fetch a page's record map, query collections, fetch blocks, and sign file
+  URLs. Use it directly when you want raw endpoint access.
+- `ingest`: high-level page snapshot built on `notionapi` — snapshot fetch,
+  normalization, collection repair, asset discovery, limits, and errors.
+- `notion`: safe static HTML renderer plus snapshot and render-warning types.
+
+Internal helpers — ID parsing, the byte-budgeted cache, and record-map
+utilities — live under `internal/` and are not part of the public API.
 
 This repository does not provide a snapshot HTTP endpoint. If an application
 needs a remote ingestor service, that service and its route contract are caller

@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hwasub/unofficial-notion-go/internal/notionid"
 	"github.com/hwasub/unofficial-notion-go/internal/notionrecordmap"
 	"github.com/hwasub/unofficial-notion-go/notionapi"
-	"github.com/hwasub/unofficial-notion-go/notionid"
 )
 
 // PageClient is the subset of a Notion client that FetchSnapshot depends on. It

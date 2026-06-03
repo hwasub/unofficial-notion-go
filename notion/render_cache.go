@@ -15,9 +15,20 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/hwasub/unofficial-notion-go/cache"
 	"github.com/hwasub/unofficial-notion-go/internal/flight"
 )
+
+// CacheStats is a point-in-time snapshot of render cache counters and size,
+// suitable for exposing as metrics. It is returned by RenderCacheStats and
+// DiskRenderCache.Snapshot.
+type CacheStats struct {
+	Entries    int   `json:"entries"`
+	UsedBytes  int64 `json:"used_bytes"`
+	LimitBytes int64 `json:"limit_bytes"`
+	Hits       int64 `json:"hits"`
+	Misses     int64 `json:"misses"`
+	Evictions  int64 `json:"evictions"`
+}
 
 // renderCacheVersion is mixed into disk cache keys so renderer, sanitizer,
 // template-contract, and local JS/CSS contract changes can invalidate cached
@@ -67,10 +78,10 @@ func currentRenderCache() *DiskRenderCache {
 }
 
 // RenderCacheStats returns a stats snapshot (zero value when disabled).
-func RenderCacheStats() cache.Stats {
+func RenderCacheStats() CacheStats {
 	c := currentRenderCache()
 	if c == nil {
-		return cache.Stats{}
+		return CacheStats{}
 	}
 	return c.Snapshot()
 }
@@ -265,9 +276,9 @@ type diskCacheFile struct {
 // Snapshot returns current cache statistics by scanning the cache directory for
 // entry count and total bytes alongside the live hit, miss, and eviction
 // counters.
-func (c *DiskRenderCache) Snapshot() cache.Stats {
+func (c *DiskRenderCache) Snapshot() CacheStats {
 	files, used := c.files()
-	return cache.Stats{
+	return CacheStats{
 		Entries:    len(files),
 		UsedBytes:  used,
 		LimitBytes: c.maxBytes,
