@@ -48,6 +48,40 @@ type recordMap struct {
 	AutomationAction map[string]automationAction           `json:"automation_action"`
 	CustomEmojis     map[string]string                     `json:"custom_emojis"`
 	SignedURLs       map[string]string                     `json:"signed_urls"`
+
+	// budget caps the total number of block renders for one RenderPage call.
+	// recordMap is passed by value, so the pointer is shared by every copy.
+	// The depth guard alone bounds recursion depth but not fan-out: a hostile
+	// record map with cyclic or repeated content references can otherwise blow
+	// up exponentially (~b^32 visits) from a few hundred bytes of JSON. nil
+	// (e.g. in direct test constructions) means unlimited.
+	budget *renderBudget
+}
+
+type renderBudget struct {
+	remaining int
+}
+
+// spendRenderBudget reports whether one more block may be rendered, consuming
+// a budget slot when it is. Rendering stops silently once the budget is
+// exhausted, mirroring the depth-cap behavior.
+func (rm recordMap) spendRenderBudget() bool {
+	if rm.budget == nil {
+		return true
+	}
+	if rm.budget.remaining <= 0 {
+		return false
+	}
+	rm.budget.remaining--
+	return true
+}
+
+// blockRenderBudget sizes the render budget for a record map with blockCount
+// blocks. Legitimate pages render each block about once (transclusions and
+// aliases re-render a handful), so 8x plus slack is generous while keeping the
+// hostile exponential case bounded to ~1k renders.
+func blockRenderBudget(blockCount int) int {
+	return 8*blockCount + 1024
 }
 
 type block struct {
@@ -273,6 +307,7 @@ func RenderPage(input RenderInput) (string, error) {
 	if err := json.Unmarshal(input.RecordMap, &rm); err != nil {
 		return "", err
 	}
+	rm.budget = &renderBudget{remaining: blockRenderBudget(len(rm.Block))}
 	rootID := NormalizeID(input.PageID)
 	root, ok := rm.Block[rootID]
 	if !ok {
@@ -337,9 +372,9 @@ func normalizeRenderWarnings(warnings []RenderWarning) []RenderWarning {
 func renderWarningText(warning RenderWarning, loc RenderInput) string {
 	switch warning.Kind {
 	case RenderWarningFetchErrors:
-		return fmt.Sprintf("%d %s", maxInt(warning.Count, 1), loc.t("notion.warn_fetch", "fetch warnings"))
+		return fmt.Sprintf("%d %s", max(warning.Count, 1), loc.t("notion.warn_fetch", "fetch warnings"))
 	case RenderWarningAssetDownloadErrors:
-		return fmt.Sprintf("%d %s", maxInt(warning.Count, 1), loc.t("notion.warn_asset_download", "asset download warnings"))
+		return fmt.Sprintf("%d %s", max(warning.Count, 1), loc.t("notion.warn_asset_download", "asset download warnings"))
 	case RenderWarningAssetsTruncated:
 		return loc.t("notion.warn_assets_truncated", "Asset limit reached; some media may be unavailable.")
 	case RenderWarningBlocksTruncated:
@@ -347,13 +382,6 @@ func renderWarningText(warning RenderWarning, loc RenderInput) string {
 	default:
 		return "Notion render warning"
 	}
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 func notionBodyClasses(root block) []string {
@@ -408,6 +436,9 @@ func renderBlockList(out *strings.Builder, rm recordMap, ids []string, input Ren
 
 func renderBlock(out *strings.Builder, rm recordMap, id string, input RenderInput, depth int) {
 	if depth > 32 {
+		return
+	}
+	if !rm.spendRenderBudget() {
 		return
 	}
 	blk, ok := rm.Block[id]
@@ -761,6 +792,9 @@ func renderList(out *strings.Builder, rm recordMap, ids []string, input RenderIn
 		blk, ok := rm.Block[id]
 		if !ok {
 			continue
+		}
+		if !rm.spendRenderBudget() {
+			break
 		}
 		out.WriteString(`<li`)
 		out.WriteString(blockClassAttr(blk))

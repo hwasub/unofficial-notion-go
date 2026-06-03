@@ -68,8 +68,8 @@ func FetchRequestFromMap(body map[string]any) FetchRequest {
 }
 
 func normalizeDefaultLimits(defaults DefaultLimits) DefaultLimits {
-	defaults.HardMaxAssets = maxInt(defaults.HardMaxAssets, 0)
-	defaults.HardMaxBlocks = maxInt(defaults.HardMaxBlocks, 1)
+	defaults.HardMaxAssets = max(defaults.HardMaxAssets, 0)
+	defaults.HardMaxBlocks = max(defaults.HardMaxBlocks, 1)
 	defaults.MaxAssets = clampInt(defaults.MaxAssets, 0, defaults.HardMaxAssets)
 	defaults.MaxBlocks = clampInt(defaults.MaxBlocks, 1, defaults.HardMaxBlocks)
 	defaults.TimeoutMS = clampInt(defaults.TimeoutMS, 1000, 300000)
@@ -80,8 +80,8 @@ func normalizeDefaultLimits(defaults DefaultLimits) DefaultLimits {
 }
 
 func normalizeRequestLimits(limits RequestLimits) RequestLimits {
-	limits.MaxAssets = maxInt(limits.MaxAssets, 0)
-	limits.MaxBlocks = maxInt(limits.MaxBlocks, 1)
+	limits.MaxAssets = max(limits.MaxAssets, 0)
+	limits.MaxBlocks = max(limits.MaxBlocks, 1)
 	limits.TimeoutMS = clampInt(limits.TimeoutMS, 1000, 300000)
 	if limits.MaxResponseBytes <= 0 {
 		limits.MaxResponseBytes = 15728640
@@ -97,13 +97,6 @@ func clampInt(value int, min int, max int) int {
 		return max
 	}
 	return value
-}
-
-func maxInt(a int, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 func readInt(name string, fallback int) int {

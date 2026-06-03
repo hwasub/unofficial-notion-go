@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"block\":{\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\":{\"id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"\":\"\",\"content\":[\"\",\"\",\"\"]},\"\": {\"id\": \"cccccccc-cccc-cccc-cccc-cccccccccccc\", \"type\": \"column_list\", \"content\": [\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\", \"cccccccc-cccc-cccc-cccc-cccccccccccc\"]}\n\t}}")
