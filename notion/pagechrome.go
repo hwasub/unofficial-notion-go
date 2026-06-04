@@ -60,7 +60,10 @@ func mediaStyle(blk block) string {
 		styles = append(styles, fmt.Sprintf("--notion-media-width:%.0fpx", width))
 	}
 	if ratio, ok := numberValue(blk.Format["block_aspect_ratio"]); ok && ratio > 0.05 && ratio <= 10 {
-		styles = append(styles, fmt.Sprintf("--notion-media-aspect-ratio:%.4g", ratio))
+		// Notion stores block_aspect_ratio as height/width, but the CSS
+		// aspect-ratio property consuming this variable is width/height, so
+		// emit the reciprocal. The guard above bounds the raw h/w value.
+		styles = append(styles, fmt.Sprintf("--notion-media-aspect-ratio:%.4g", 1/ratio))
 	}
 	return strings.Join(styles, ";")
 }

@@ -798,15 +798,17 @@ func TestRenderPageRendersTweetsAsStaticCards(t *testing.T) {
 
 func TestRenderPageAppliesSafeMediaFormat(t *testing.T) {
 	const (
-		rootID  = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-		imageID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
-		videoID = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+		rootID      = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+		imageID     = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+		videoID     = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+		bannerID    = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+		ultraWideID = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
 	)
 	recordMap := marshalRecordMap(t, map[string]any{
 		rootID: map[string]any{
 			"id":      rootID,
 			"type":    "page",
-			"content": []string{imageID, videoID},
+			"content": []string{imageID, videoID, bannerID, ultraWideID},
 			"format": map[string]any{
 				"page_cover_position": 0.42,
 			},
@@ -815,9 +817,10 @@ func TestRenderPageAppliesSafeMediaFormat(t *testing.T) {
 			"id":   imageID,
 			"type": "image",
 			"format": map[string]any{
-				"block_width":        480,
-				"block_alignment":    "center",
-				"block_aspect_ratio": 1.777,
+				"block_width":     480,
+				"block_alignment": "center",
+				// Notion stores block_aspect_ratio as height/width: 16:9 is 0.5625.
+				"block_aspect_ratio": 0.5625,
 			},
 		},
 		videoID: map[string]any{
@@ -829,22 +832,46 @@ func TestRenderPageAppliesSafeMediaFormat(t *testing.T) {
 				"block_width":      5000,
 			},
 		},
+		bannerID: map[string]any{
+			"id":   bannerID,
+			"type": "image",
+			"format": map[string]any{
+				"block_width": 1200,
+				// Wide banner regression: 220/2500 stored as h/w.
+				"block_aspect_ratio": 0.088,
+			},
+		},
+		ultraWideID: map[string]any{
+			"id":   ultraWideID,
+			"type": "image",
+			"format": map[string]any{
+				"block_width": 320,
+				// Below the raw h/w guard (> 0.05); the variable must be dropped.
+				"block_aspect_ratio": 0.01,
+			},
+		},
 	})
 
 	html, err := RenderPage(RenderInput{
 		RecordMap: recordMap,
 		PageID:    rootID,
 		AssetURLs: map[string]string{
-			rootID:  "/notion-assets/cover/cover.jpg",
-			imageID: "/notion-assets/image/image.png",
-			videoID: "/notion-assets/video/video.mp4",
+			rootID:      "/notion-assets/cover/cover.jpg",
+			imageID:     "/notion-assets/image/image.png",
+			videoID:     "/notion-assets/video/video.mp4",
+			bannerID:    "/notion-assets/image/banner.png",
+			ultraWideID: "/notion-assets/image/ultra-wide.png",
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertContains(t, html, `<figure class="notion-cover notion-media notion-media--full" style="--notion-cover-position-y:58.00%">`)
-	assertContains(t, html, `<figure class="notion-media notion-media--image notion-media--center" style="--notion-media-width:480px;--notion-media-aspect-ratio:1.777">`)
+	// The CSS variable is consumed by the width/height aspect-ratio property,
+	// so the stored h/w value must come out reciprocated.
+	assertContains(t, html, `<figure class="notion-media notion-media--image notion-media--center" style="--notion-media-width:480px;--notion-media-aspect-ratio:1.778">`)
+	assertContains(t, html, `<figure class="notion-media notion-media--image" style="--notion-media-width:1200px;--notion-media-aspect-ratio:11.36">`)
+	assertContains(t, html, `<figure class="notion-media notion-media--image" style="--notion-media-width:320px">`)
 	assertContains(t, html, `<a class="notion-media__link" href="/notion-assets/image/image.png" data-collection-lightbox data-full-src="/notion-assets/image/image.png"><img src="/notion-assets/image/image.png"`)
 	assertContains(t, html, `<figure class="notion-media notion-media--video notion-media--full">`)
 	if strings.Contains(html, `onmouseover`) || strings.Contains(html, `5000px`) {
