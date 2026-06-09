@@ -379,6 +379,56 @@ func TestRenderPageResolvesRichTextLinksInCaptionsAndTables(t *testing.T) {
 	}
 }
 
+func TestRenderPageResolvesInPageHeadingAnchorLink(t *testing.T) {
+	const (
+		rootID    = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+		headingID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+		paraID    = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+	)
+	rootCompact := strings.ReplaceAll(rootID, "-", "")
+	headingCompact := strings.ReplaceAll(headingID, "-", "")
+	// In-page heading link as Notion stores it: "/<pageid>#<blockid>".
+	pageLink := "/" + rootCompact + "#" + headingCompact
+	recordMap := marshalRecordMap(t, map[string]any{
+		rootID: map[string]any{
+			"id":      rootID,
+			"type":    "page",
+			"content": []string{headingID, paraID},
+		},
+		headingID: map[string]any{
+			"id":   headingID,
+			"type": "header",
+			"properties": map[string]any{
+				"title": [][]any{{"Getting started"}},
+			},
+		},
+		paraID: map[string]any{
+			"id":   paraID,
+			"type": "text",
+			"properties": map[string]any{
+				"title": [][]any{{"Jump to start", [][]any{{"a", pageLink}}}},
+			},
+		},
+	})
+
+	html, err := RenderPage(RenderInput{
+		RecordMap:    recordMap,
+		PageID:       rootID,
+		ResourceSlug: "doc",
+		PagePaths:    map[string]string{rootID: ""},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The heading carries the anchor id and the in-page link must point at it,
+	// fragment included — otherwise clicking the link does nothing.
+	assertContains(t, html, `<h2 id="notion-`+headingCompact+`">Getting started</h2>`)
+	assertContains(t, html, `<a href="/doc#notion-`+headingCompact+`" rel="noopener noreferrer">Jump to start</a>`)
+	if strings.Contains(html, `<a href="/doc" rel="noopener noreferrer">Jump to start</a>`) {
+		t.Fatalf("in-page heading link dropped its #fragment: %s", html)
+	}
+}
+
 func TestRenderPageUsesLocalPageIconAsset(t *testing.T) {
 	const rootID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 	recordMap := marshalRecordMap(t, map[string]any{

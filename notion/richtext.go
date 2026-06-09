@@ -356,11 +356,28 @@ func notionMentionResolver(rm recordMap, input RenderInput) mentionResolver {
 		switch kind {
 		case "a":
 			id := stringValue(value)
+			anchor := notionLinkFragmentAnchor(id)
 			pageID, ok := notionPageIDFromLink(id)
 			if !ok {
+				// Pure in-page fragment link ("#<blockid>") with no page path.
+				if anchor != "" {
+					return "#" + anchor
+				}
 				return ""
 			}
-			return notionPageHrefForInput(input, pageID)
+			href := notionPageHrefForInput(input, pageID)
+			if href == "" {
+				// Target not in PagePaths; a same-page link still jumps via the
+				// fragment alone.
+				if anchor != "" && NormalizeID(pageID) == NormalizeID(input.PageID) {
+					return "#" + anchor
+				}
+				return ""
+			}
+			if anchor != "" {
+				return href + "#" + anchor
+			}
+			return href
 		case "eoi":
 			id := stringValue(value)
 			blk, ok := rm.Block[NormalizeID(id)]

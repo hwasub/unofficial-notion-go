@@ -49,6 +49,27 @@ func TestApplyDecorationsColorForegroundVsBackground(t *testing.T) {
 	}
 }
 
+func TestNotionLinkFragmentAnchor(t *testing.T) {
+	block := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	page := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	cases := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"in-page heading link", "/" + page + "#" + block, "notion-" + block},
+		{"bare fragment", "#" + block, "notion-" + block},
+		{"no fragment", "/" + page, ""},
+		{"non-block fragment", "/" + page + "#section-intro", ""},
+		{"empty", "", ""},
+	}
+	for _, tc := range cases {
+		if got := notionLinkFragmentAnchor(tc.raw); got != tc.want {
+			t.Errorf("%s: notionLinkFragmentAnchor(%q) = %q, want %q", tc.name, tc.raw, got, tc.want)
+		}
+	}
+}
+
 func TestDirectSubpageLinksHandlesContentCycle(t *testing.T) {
 	// A block-content cycle must not drive the traversal into infinite
 	// recursion (test completion proves the guard works).

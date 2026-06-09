@@ -95,6 +95,29 @@ func notionPageIDFromLink(raw string) (string, bool) {
 	return notionPageIDFromPath(parsed.Path)
 }
 
+// notionLinkFragmentAnchor returns the heading anchor ("notion-<id>") for the
+// in-page fragment of a Notion link URL, or "" when the URL carries no Notion
+// block fragment. The returned anchor matches the id emitted by headingAnchor,
+// so links to a heading within the page resolve to the right element.
+func notionLinkFragmentAnchor(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	frag := strings.TrimSpace(parsed.Fragment)
+	if frag == "" {
+		return ""
+	}
+	if _, ok := normalizedPageID(frag); !ok {
+		return ""
+	}
+	return headingAnchor(frag)
+}
+
 func isNotionPageLinkHost(host string) bool {
 	host = strings.ToLower(strings.TrimSpace(host))
 	if host == "" || host == "file.notion.so" {
