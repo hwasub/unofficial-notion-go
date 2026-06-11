@@ -13,6 +13,11 @@ const (
 	ErrorCodeMaxResponseBytesExceeded = "max_response_bytes_exceeded"
 	// ErrorCodeMaxBlocksExceeded marks a page block-count limit failure.
 	ErrorCodeMaxBlocksExceeded = "max_blocks_exceeded"
+	// ErrorCodeUnexpectedContentType marks a response whose Content-Type is not JSON.
+	ErrorCodeUnexpectedContentType = "unexpected_content_type"
+	// ErrorCodeMalformedResponse marks a decoded response that exceeds the
+	// structural limits Fetch enforces (nesting depth, array length).
+	ErrorCodeMalformedResponse = "malformed_response"
 )
 
 // HTTPError reports a non-2xx response from the Notion API or a local response

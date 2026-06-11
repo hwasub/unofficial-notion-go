@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"strings"
@@ -20,6 +21,23 @@ import (
 // Notion response body. It guards against unbounded memory growth from a
 // malicious or malfunctioning upstream.
 const defaultMaxResponseBytes = 15 << 20
+
+// Structural limits Fetch enforces on decoded responses. Real Notion record
+// maps nest well under 30 levels and the largest arrays (blockIds) stay far
+// below the hard block caps, so these bounds only reject hostile or corrupt
+// payloads before they reach recursive consumers downstream.
+const (
+	maxDecodedDepth    = 128
+	maxDecodedArrayLen = 100_000
+)
+
+// rejectRedirects refuses to follow any redirect. Fetch surfaces the 3xx
+// response as an *HTTPError instead, so the token_v2 cookie is never re-sent
+// to a redirect target. Notion's /api/v3 POST endpoints do not legitimately
+// redirect.
+func rejectRedirects(*http.Request, []*http.Request) error {
+	return http.ErrUseLastResponse
+}
 
 // Client talks to the private Notion API. Construct it with New; the zero value
 // is usable but New is preferred because it installs sane defaults. All fields
@@ -59,7 +77,10 @@ func WithUserTimeZone(value string) Option {
 }
 
 // WithHTTPClient overrides the *http.Client used for requests. A nil value is
-// ignored, leaving the default client in place.
+// ignored, leaving the default client in place. The client is used as-is,
+// including its redirect policy: set CheckRedirect (for example to return
+// http.ErrUseLastResponse, as the default client does) so the token_v2 cookie
+// is never re-sent to a redirect target.
 func WithHTTPClient(value *http.Client) Option {
 	return func(c *Client) {
 		if value != nil {
@@ -129,7 +150,7 @@ func New(opts ...Option) *Client {
 	c := &Client{
 		apiBaseURL:       "https://www.notion.so/api/v3",
 		userTimeZone:     "America/New_York",
-		httpClient:       &http.Client{Timeout: 60 * time.Second},
+		httpClient:       &http.Client{Timeout: 60 * time.Second, CheckRedirect: rejectRedirects},
 		maxResponseBytes: defaultMaxResponseBytes,
 	}
 	for _, opt := range opts {
@@ -156,7 +177,7 @@ func (c *Client) normalized() *Client {
 		out.userTimeZone = "America/New_York"
 	}
 	if out.httpClient == nil {
-		out.httpClient = &http.Client{Timeout: 60 * time.Second}
+		out.httpClient = &http.Client{Timeout: 60 * time.Second, CheckRedirect: rejectRedirects}
 	}
 	if out.maxResponseBytes <= 0 {
 		out.maxResponseBytes = defaultMaxResponseBytes
@@ -203,11 +224,15 @@ func (c *Client) GetPage(ctx context.Context, pageID string, opts PageOptions) (
 		return nil, err
 	}
 
+	contentBlockIDs := notionrecordmap.GetPageContentBlockIDs(recordMap, rootPageID)
 	if opts.FetchMissingBlocks {
 		for {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			blocks := notionrecordmap.AsMap(recordMap["block"])
 			pending := []string{}
-			for _, id := range notionrecordmap.GetPageContentBlockIDs(recordMap, rootPageID) {
+			for _, id := range contentBlockIDs {
 				if _, ok := blocks[id]; !ok {
 					pending = append(pending, id)
 				}
@@ -234,10 +259,12 @@ func (c *Client) GetPage(ctx context.Context, pageID string, opts PageOptions) (
 				// re-requesting the same set forever.
 				break
 			}
+			// New blocks may reference further content; the traversal is only
+			// recomputed here, after a merge actually changed the block table.
+			contentBlockIDs = notionrecordmap.GetPageContentBlockIDs(recordMap, rootPageID)
 		}
 	}
 
-	contentBlockIDs := notionrecordmap.GetPageContentBlockIDs(recordMap, rootPageID)
 	if opts.FetchCollections {
 		instances := collectionInstances(recordMap, contentBlockIDs)
 		results := c.fetchCollections(ctx, recordMap, instances, opts)
@@ -344,6 +371,7 @@ func (c *Client) GetCollectionData(ctx context.Context, collectionID string, col
 		}
 	}
 
+	sorts := collectionViewSorts(view, query2)
 	loader := map[string]any{
 		"type": "reducer",
 		"reducers": map[string]any{
@@ -353,12 +381,14 @@ func (c *Client) GetCollectionData(ctx context.Context, collectionID string, col
 				"loadContentCover": opts.LoadContentCover,
 			},
 		},
-		"sort":         []any{},
 		"filter":       map[string]any{"filters": filters, "operator": "and"},
 		"searchQuery":  opts.SearchQuery,
 		"userTimeZone": opts.UserTimeZone,
 	}
+	// query2 may overwrite "filter" here; that mirrors the upstream TS
+	// reference implementation and is intentionally left unchanged.
 	mergeMap(loader, query2)
+	loader["sort"] = sorts
 
 	if groupBy != nil {
 		groups := notionrecordmap.AsSlice(format["board_columns"])
@@ -456,6 +486,7 @@ func (c *Client) GetCollectionData(ctx context.Context, collectionID string, col
 			"filter":       map[string]any{"filters": filters, "operator": "and"},
 		}
 		mergeMap(loader, query2)
+		loader["sort"] = sorts
 	}
 
 	headers := map[string]string{}
@@ -576,7 +607,10 @@ func (c *Client) AddSignedURLs(ctx context.Context, recordMap map[string]any, co
 // response body at the client's maxResponseBytes, and decodes JSON numbers
 // losslessly via json.Number. A non-2xx status, an oversized body, or a decode
 // failure is returned as an error; non-2xx responses are wrapped in *HTTPError
-// with any parsed upstream message and Retry-After delay.
+// with any parsed upstream message and Retry-After delay. Successful responses
+// must carry a JSON Content-Type and stay within structural limits
+// (maxDecodedDepth nesting levels, maxDecodedArrayLen items per array);
+// violations are returned as *HTTPError with a machine-readable Code.
 func (c *Client) Fetch(ctx context.Context, endpoint string, body map[string]any, extraHeaders map[string]string, query url.Values) (map[string]any, error) {
 	c = c.normalized()
 	endpointURL := c.apiBaseURL + "/" + strings.TrimLeft(endpoint, "/")
@@ -636,13 +670,77 @@ func (c *Client) Fetch(ctx context.Context, endpoint string, body map[string]any
 			RetryAfterMS: RetryAfterToMS(resp.Header.Get("Retry-After"), time.Now()),
 		}
 	}
+	// Checked after the non-2xx branch on purpose: upstream error bodies are
+	// parsed for messages regardless of their declared type. A missing header
+	// is tolerated (some proxies strip it); only an explicit non-JSON type is
+	// rejected — the JSON decode below still guards the headerless case.
+	if contentType := resp.Header.Get("Content-Type"); contentType != "" {
+		mediaType, _, _ := mime.ParseMediaType(contentType)
+		if mediaType != "application/json" && !strings.HasSuffix(mediaType, "+json") {
+			return nil, &HTTPError{
+				StatusCode: http.StatusBadGateway,
+				Code:       ErrorCodeUnexpectedContentType,
+				Message:    fmt.Sprintf("notion response content-type %q is not JSON", mediaType),
+			}
+		}
+	}
 	var out map[string]any
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
 	if err := decoder.Decode(&out); err != nil {
 		return nil, err
 	}
+	if err := validateDecodedStructure(out); err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+// validateDecodedStructure rejects decoded responses that nest deeper than
+// maxDecodedDepth or carry arrays longer than maxDecodedArrayLen. Downstream
+// consumers (Scrub, GetPageContentBlockIDs) walk record maps recursively, so a
+// hostile payload could otherwise overflow their stacks. The walk itself is
+// iterative for the same reason.
+func validateDecodedStructure(value any) error {
+	type frame struct {
+		value any
+		depth int
+	}
+	stack := []frame{{value: value, depth: 1}}
+	for len(stack) > 0 {
+		next := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		var children []any
+		switch typed := next.value.(type) {
+		case map[string]any:
+			children = make([]any, 0, len(typed))
+			for _, child := range typed {
+				children = append(children, child)
+			}
+		case []any:
+			if len(typed) > maxDecodedArrayLen {
+				return &HTTPError{
+					StatusCode: http.StatusBadGateway,
+					Code:       ErrorCodeMalformedResponse,
+					Message:    fmt.Sprintf("notion response array exceeds %d items", maxDecodedArrayLen),
+				}
+			}
+			children = typed
+		default:
+			continue
+		}
+		if len(children) > 0 && next.depth >= maxDecodedDepth {
+			return &HTTPError{
+				StatusCode: http.StatusBadGateway,
+				Code:       ErrorCodeMalformedResponse,
+				Message:    fmt.Sprintf("notion response nests deeper than %d levels", maxDecodedDepth),
+			}
+		}
+		for _, child := range children {
+			stack = append(stack, frame{value: child, depth: next.depth + 1})
+		}
+	}
+	return nil
 }
 
 type collectionInstance struct {
@@ -678,6 +776,13 @@ func (c *Client) fetchCollections(ctx context.Context, recordMap map[string]any,
 			defer wg.Done()
 			for index := range jobs {
 				instance := instances[index]
+				// Keep draining the channel (an early return would deadlock the
+				// unbuffered producer below) but stop issuing upstream calls once
+				// the caller's context is done.
+				if err := ctx.Err(); err != nil {
+					results[index] = collectionFetchResult{Instance: instance, Err: err}
+					continue
+				}
 				collectionViews := notionrecordmap.AsMap(recordMap["collection_view"])
 				collectionView := mapValue(collectionViews[instance.ViewID], "value")
 				data, err := c.GetCollectionData(ctx, instance.CollectionID, instance.ViewID, collectionView, CollectionOptions{
@@ -698,6 +803,22 @@ func (c *Client) fetchCollections(ctx context.Context, recordMap map[string]any,
 	close(jobs)
 	wg.Wait()
 	return results
+}
+
+// collectionViewSorts extracts the view's sort specs in the shape the
+// queryCollection loader expects ([{property, direction}], passed through
+// verbatim). Modern views store them in query2.sort; legacy views in
+// query.sort. Setting them explicitly after the query2 merge covers both
+// shapes and the grouped branch, whose loader otherwise carries no sort.
+func collectionViewSorts(view map[string]any, query2 map[string]any) []any {
+	sorts := notionrecordmap.AsSlice(query2["sort"])
+	if len(sorts) == 0 {
+		sorts = notionrecordmap.AsSlice(notionrecordmap.AsMap(view["query"])["sort"])
+	}
+	if sorts == nil {
+		sorts = []any{}
+	}
+	return sorts
 }
 
 func collectionInstances(recordMap map[string]any, contentBlockIDs []string) []collectionInstance {

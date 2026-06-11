@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -261,6 +262,65 @@ func TestGetCollectionDataBuildsGroupedBoardReducers(t *testing.T) {
 	}
 }
 
+func TestGetCollectionDataForwardsViewSorts(t *testing.T) {
+	sortSpec := []any{map[string]any{"property": "K{tS", "direction": "descending"}}
+	cases := []struct {
+		name string
+		view map[string]any
+		want []any
+	}{
+		{
+			name: "query2 sort",
+			view: map[string]any{"type": "table", "format": map[string]any{}, "query2": map[string]any{"sort": sortSpec}},
+			want: sortSpec,
+		},
+		{
+			name: "legacy query sort",
+			view: map[string]any{"type": "table", "format": map[string]any{}, "query": map[string]any{"sort": sortSpec}},
+			want: sortSpec,
+		},
+		{
+			name: "grouped board keeps sort",
+			view: map[string]any{
+				"type": "board",
+				"format": map[string]any{
+					"board_columns_by": map[string]any{"property": "K{tS", "type": "select"},
+					"board_columns":    []any{map[string]any{"property": "K{tS", "value": map[string]any{"type": "select", "value": "Ready"}}},
+				},
+				"query2": map[string]any{"sort": sortSpec},
+			},
+			want: sortSpec,
+		},
+		{
+			name: "no sorts defaults to empty",
+			view: map[string]any{"type": "table", "format": map[string]any{}},
+			want: []any{},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var requestBody map[string]any
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+					t.Error(err)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"result":{"reducerResults":{}}}`))
+			}))
+			defer server.Close()
+
+			client := New(WithAPIBaseURL(server.URL))
+			if _, err := client.GetCollectionData(context.Background(), "collection-id", "view-id", tc.view, CollectionOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			loader := requestBody["loader"].(map[string]any)
+			if !reflect.DeepEqual(loader["sort"], tc.want) {
+				t.Fatalf("loader sort = %#v, want %#v", loader["sort"], tc.want)
+			}
+		})
+	}
+}
+
 func TestGetPageFetchesCollectionsConcurrently(t *testing.T) {
 	rootID := "1ad6e61c-f824-80c9-a6c4-d251043457d3"
 	collectionBlock1ID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
@@ -344,6 +404,201 @@ func TestGetPageRejectsMaxBlocksBeforeFetchingMissingBlocks(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&syncRecordCalls); got != 0 {
 		t.Fatalf("syncRecordValuesMain calls = %d, want 0", got)
+	}
+}
+
+// Redirect responses must surface as errors instead of being followed, so the
+// token_v2 cookie is never re-sent to a redirect target.
+func TestFetchDoesNotFollowRedirects(t *testing.T) {
+	var redirectTargetHits int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&redirectTargetHits, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer target.Close()
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/loadPageChunk", http.StatusFound)
+	}))
+	defer origin.Close()
+
+	client := New(WithAPIBaseURL(origin.URL), WithAuthToken("secret"))
+	_, err := client.Fetch(context.Background(), "loadPageChunk", map[string]any{}, nil, nil)
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("error = %#v, want *HTTPError", err)
+	}
+	if httpErr.StatusCode != http.StatusFound {
+		t.Fatalf("status code = %d, want %d", httpErr.StatusCode, http.StatusFound)
+	}
+	if got := atomic.LoadInt32(&redirectTargetHits); got != 0 {
+		t.Fatalf("redirect target hits = %d, want 0", got)
+	}
+}
+
+func TestFetchRejectsNonJSONContentType(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<html>not json</html>`))
+	}))
+	defer server.Close()
+
+	client := New(WithAPIBaseURL(server.URL))
+	_, err := client.Fetch(context.Background(), "loadPageChunk", map[string]any{}, nil, nil)
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("error = %#v, want *HTTPError", err)
+	}
+	if httpErr.Code != ErrorCodeUnexpectedContentType {
+		t.Fatalf("error code = %q", httpErr.Code)
+	}
+}
+
+// A missing Content-Type header is tolerated (some proxies strip it); only an
+// explicit non-JSON type is rejected.
+func TestFetchAllowsMissingContentType(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header()["Content-Type"] = nil // suppress Go's automatic detection
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	client := New(WithAPIBaseURL(server.URL))
+	out, err := client.Fetch(context.Background(), "loadPageChunk", map[string]any{}, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out["ok"] != true {
+		t.Fatalf("out = %#v", out)
+	}
+}
+
+func TestFetchRejectsDeeplyNestedResponse(t *testing.T) {
+	body := `{"a":` + strings.Repeat("[", 200) + "1" + strings.Repeat("]", 200) + `}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	client := New(WithAPIBaseURL(server.URL))
+	_, err := client.Fetch(context.Background(), "loadPageChunk", map[string]any{}, nil, nil)
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("error = %#v, want *HTTPError", err)
+	}
+	if httpErr.Code != ErrorCodeMalformedResponse {
+		t.Fatalf("error code = %q", httpErr.Code)
+	}
+}
+
+func TestFetchRejectsOversizedArrayResponse(t *testing.T) {
+	body := `{"a":[` + strings.TrimRight(strings.Repeat("0,", maxDecodedArrayLen+1), ",") + `]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	client := New(WithAPIBaseURL(server.URL))
+	_, err := client.Fetch(context.Background(), "loadPageChunk", map[string]any{}, nil, nil)
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("error = %#v, want *HTTPError", err)
+	}
+	if httpErr.Code != ErrorCodeMalformedResponse {
+		t.Fatalf("error code = %q", httpErr.Code)
+	}
+}
+
+func TestFetchAllowsTypicalNesting(t *testing.T) {
+	body := `{"a":` + strings.Repeat(`{"b":`, 30) + "1" + strings.Repeat("}", 30) + `}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	client := New(WithAPIBaseURL(server.URL))
+	if _, err := client.Fetch(context.Background(), "loadPageChunk", map[string]any{}, nil, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// Cancellation between pagination iterations must stop GetPage before it asks
+// the upstream for the next batch of missing blocks.
+func TestGetPageStopsFetchingMissingBlocksOnCancel(t *testing.T) {
+	rootID := "1ad6e61c-f824-80c9-a6c4-d251043457d3"
+	child1ID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	child2ID := "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var syncRecordCalls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/loadPageChunk":
+			_, _ = w.Write([]byte(`{
+				"recordMap": {
+					"block": {
+						"` + rootID + `": {"value": {"id": "` + rootID + `", "type": "page", "content": ["` + child1ID + `"]}}
+					}
+				}
+			}`))
+		case "/syncRecordValuesMain":
+			atomic.AddInt32(&syncRecordCalls, 1)
+			// Cancel before answering: the returned block references another
+			// missing child, so without the loop-top ctx check GetPage would
+			// issue a second syncRecordValuesMain call.
+			cancel()
+			_, _ = w.Write([]byte(`{"recordMap":{"block":{
+				"` + child1ID + `": {"value": {"id": "` + child1ID + `", "type": "text", "content": ["` + child2ID + `"]}}
+			}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := New(WithAPIBaseURL(server.URL))
+	_, err := client.GetPage(ctx, rootID, PageOptions{FetchMissingBlocks: true})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %#v, want context.Canceled", err)
+	}
+	if got := atomic.LoadInt32(&syncRecordCalls); got != 1 {
+		t.Fatalf("syncRecordValuesMain calls = %d, want 1", got)
+	}
+}
+
+// Once the context is done, collection workers must drain their remaining jobs
+// without issuing further upstream calls.
+func TestFetchCollectionsSkipsJobsAfterCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var queryCollectionCalls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&queryCollectionCalls, 1)
+		cancel()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"result":{"reducerResults":{}}}`))
+	}))
+	defer server.Close()
+
+	client := New(WithAPIBaseURL(server.URL)).normalized()
+	recordMap := map[string]any{"collection_view": map[string]any{}}
+	instances := []collectionInstance{
+		{CollectionID: "c1", ViewID: "v1"},
+		{CollectionID: "c2", ViewID: "v2"},
+		{CollectionID: "c3", ViewID: "v3"},
+	}
+	results := client.fetchCollections(ctx, recordMap, instances, PageOptions{Concurrency: 1})
+	if got := atomic.LoadInt32(&queryCollectionCalls); got != 1 {
+		t.Fatalf("queryCollection calls = %d, want 1", got)
+	}
+	for i, result := range results[1:] {
+		if !errors.Is(result.Err, context.Canceled) {
+			t.Fatalf("results[%d].Err = %#v, want context.Canceled", i+1, result.Err)
+		}
 	}
 }
 
