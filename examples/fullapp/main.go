@@ -56,6 +56,12 @@ func main() {
 	mux.HandleFunc("/render", app.handleRender)
 	mux.HandleFunc("/assets/", app.handleAsset)
 	mux.Handle("/static/", cacheStatic(http.StripPrefix("/static/", http.FileServer(http.FS(static)))))
+	// The renderer stylesheet comes from the library itself so it always
+	// matches the HTML this build emits; the exact pattern wins over /static/.
+	mux.Handle("/static/notion.css", cacheStatic(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+		io.WriteString(w, notion.StyleCSS())
+	})))
 
 	log.Printf("listening on %s", *addr)
 	log.Fatal(http.ListenAndServe(*addr, mux))
@@ -273,6 +279,7 @@ func document(title, currentURL, body string) string {
 	out.WriteString(escapedTitle)
 	out.WriteString(`</title>`)
 	out.WriteString(`<link rel="stylesheet" href="/static/notion.css">`)
+	out.WriteString(`<link rel="stylesheet" href="/static/fullapp.css">`)
 	out.WriteString(`<link rel="stylesheet" href="`)
 	out.WriteString(katexCSSURL)
 	out.WriteString(`">`)

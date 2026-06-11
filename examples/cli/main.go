@@ -9,9 +9,11 @@
 //
 //	go run ./examples/cli -url "https://www.notion.so/Example-1ad6e61cf82480c9a6c4d251043457d3" -out ./out
 //
-// The generated out/index.html links out/notion.css and out/notion.js (copied
-// from the -css and -js paths), so opening it in a browser shows the styled,
-// interactive page.
+// The generated out/index.html links out/notion.css and out/notion.js. The
+// stylesheet defaults to the embedded notion.StyleCSS(); pass -css to copy a
+// custom file instead, or -css none to skip it. The script is copied from the
+// -js path. Opening index.html in a browser shows the styled, interactive
+// page.
 //
 // This is a demonstration, not production code: it has minimal error handling
 // and downloads assets serially.
@@ -40,7 +42,7 @@ import (
 func main() {
 	pageURL := flag.String("url", "", "public Notion page URL or ID (required)")
 	outDir := flag.String("out", "out", "output directory for index.html and assets")
-	cssPath := flag.String("css", "examples/notion.css", "stylesheet to copy next to index.html (empty to skip)")
+	cssPath := flag.String("css", "", "stylesheet to copy next to index.html (default: embedded notion.StyleCSS(); \"none\" to skip)")
 	jsPath := flag.String("js", "examples/notion.js", "script to copy next to index.html (empty to skip)")
 	maxAssets := flag.Int("max-assets", 200, "maximum number of assets to fetch")
 	flag.Parse()
@@ -97,10 +99,17 @@ func run(pageURL, outDir, cssPath, jsPath string, maxAssets int) error {
 
 	// 4. Wrap the rendered body in a minimal HTML document and write everything.
 	indexPath := filepath.Join(outDir, "index.html")
-	if err := os.WriteFile(indexPath, []byte(document(snapshot.Page.Title, body, cssPath != "", jsPath != "")), 0o644); err != nil {
+	includeCSS := cssPath != "none"
+	if err := os.WriteFile(indexPath, []byte(document(snapshot.Page.Title, body, includeCSS, jsPath != "")), 0o644); err != nil {
 		return err
 	}
-	if cssPath != "" {
+	switch cssPath {
+	case "none":
+	case "":
+		if err := os.WriteFile(filepath.Join(outDir, "notion.css"), []byte(notion.StyleCSS()), 0o644); err != nil {
+			log.Printf("could not write embedded stylesheet: %v", err)
+		}
+	default:
 		if err := copyFile(cssPath, filepath.Join(outDir, "notion.css")); err != nil {
 			log.Printf("could not copy stylesheet %s: %v", cssPath, err)
 		}

@@ -1,6 +1,8 @@
-/* Sample Notion renderer CSS for the HTML classes emitted by RenderPage.
-   It pairs a public Notion reader's rules with the design tokens they reference
-   so quick-start pages can load a single stylesheet. */
+/* Canonical stylesheet for the HTML classes emitted by RenderPage.
+   This file is embedded into the notion package (see style.go) and returned by
+   notion.StyleCSS(), so it versions together with the renderer. It pairs a
+   public Notion reader's rules with the design tokens they reference so a
+   single stylesheet covers every notion-* class the renderer can emit. */
 
 /* Design tokens.
    Aesthetic: warm minimal · paper & ivory · restrained ink-blue accent.
@@ -11,9 +13,9 @@
      2. Semantic vars — what the UI references (--bg, --fg, --accent, …) */
 
 
-/* Font imports */
-@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css');
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap');
+/* Self-contained: no external imports or fonts. Callers who prefer webfonts
+   (e.g. Pretendard, JetBrains Mono) can load them separately and override
+   --font-sans / --font-mono. */
 
 
 /* ============================================================================
@@ -108,11 +110,11 @@
   --shadow-focus: 0 0 0 3px rgba(47, 92, 240, 0.25);
 
   /* Type stacks */
-  --font-sans: 'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont,
-               'Segoe UI', system-ui, 'Apple SD Gothic Neo', 'Noto Sans KR',
-               'Helvetica Neue', Arial, sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', 'Menlo', 'Consolas',
-               'Liberation Mono', monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui,
+               'Apple SD Gothic Neo', 'Noto Sans KR', 'Helvetica Neue', Arial,
+               sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'Menlo', 'Consolas', 'Liberation Mono',
+               monospace;
 
   /* Type scale */
   --display-size: 44px;  --display-lh: 52px;  --display-weight: 700;  --display-tracking: 0;
@@ -918,6 +920,25 @@
   min-height: var(--notion-embed-height, 24rem);
 }
 
+.notion-embed--youtube iframe,
+.notion-embed--vimeo iframe,
+.notion-embed--loom iframe {
+  aspect-ratio: 16 / 9;
+}
+
+.notion-embed--figma iframe {
+  aspect-ratio: 4 / 3;
+  min-height: min(var(--notion-embed-height, 60vh), 24rem);
+}
+
+/* Spotify players are fixed-height cards, not 16:9 frames. 352px is the
+   standard player; 152px is the compact one. */
+.notion-embed--spotify iframe {
+  aspect-ratio: auto;
+  height: var(--notion-embed-height, 352px);
+  min-height: 152px;
+}
+
 .notion-body figcaption {
   margin-top: var(--space-2);
   color: var(--fg-subtle);
@@ -1100,6 +1121,7 @@
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border-subtle);
   vertical-align: top;
+  overflow-wrap: anywhere;
 }
 
 .notion-body th {
@@ -1402,8 +1424,11 @@
   line-height: inherit;
 }
 
+/* The inner pre/chroma is the scroll container so long lines scroll the code
+   alone, keeping the header bar (language label, copy button) and caption
+   pinned in place. */
 .notion-code pre {
-  overflow-x: visible;
+  overflow-x: auto;
   margin: 0;
   padding: 0;
   border: 0;
@@ -1415,7 +1440,7 @@
 }
 
 .notion-code .chroma {
-  overflow-x: visible;
+  overflow-x: auto;
   background: transparent;
 }
 
@@ -2338,6 +2363,17 @@
   font-variant-numeric: tabular-nums;
 }
 
+.notion-property-unique-id {
+  display: inline-block;
+  padding: 0 var(--space-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
+}
+
 .notion-property-rollup-list {
   display: inline-flex;
   flex-wrap: wrap;
@@ -2740,5 +2776,63 @@
 
   .public-reader--notion > .notion-cover img {
     height: 270px;
+  }
+}
+
+/* ============================================================================
+   PRINT
+   ========================================================================== */
+
+@media print {
+  /* Force the light palette on paper regardless of theme. The selectors match
+     or beat the dark-theme blocks' specificity and come later in the sheet. */
+  :root,
+  :root[data-theme='dark'],
+  :root:not([data-theme]) {
+    color-scheme: light;
+
+    --bg:          #ffffff;
+    --bg-elev-1:   #ffffff;
+    --bg-elev-2:   #f5f4f0;
+    --bg-inset:    #f5f4f0;
+
+    --fg:          #1f1d17;
+    --fg-strong:   #000000;
+    --fg-muted:    #444036;
+    --fg-subtle:   #56503f;
+    --fg-faint:    #8a8170;
+
+    --border-subtle: #ddd8ca;
+    --border:        #c8c1ad;
+    --border-strong: #56503f;
+
+    /* Code blocks: swap the dark Prism surface for a printable light one. */
+    --notion-code-bg:      #f5f4f0;
+    --notion-code-fg:      #1f1d17;
+    --notion-code-muted:   #56503f;
+    --notion-code-keyword: #8a4baf;
+    --notion-code-name:    #1f1d17;
+    --notion-code-builtin: #8a6d00;
+    --notion-code-number:  #b25b12;
+    --notion-code-string:  #1d6f35;
+    --notion-code-hl-bg:   #e8e5da;
+  }
+
+  /* Interactive chrome has no meaning on paper. */
+  .notion-code__copy,
+  .notion-render-warning {
+    display: none;
+  }
+
+  /* No scrollbars on paper: wrap long code lines instead of clipping them. */
+  .notion-code pre,
+  .notion-code .chroma {
+    white-space: pre-wrap;
+    overflow-x: visible;
+  }
+
+  .notion-body a {
+    color: inherit;
+    text-decoration: underline;
   }
 }

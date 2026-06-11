@@ -106,15 +106,20 @@ go run ./examples/server -addr :8080
 go run ./examples/fullapp -addr :8080
 ```
 
-## Sample CSS and JS
+## Stylesheet and JS
 
 `RenderPage` emits semantic HTML and `notion-*` classes, but it does not inline
-CSS or JavaScript. A standalone sample stylesheet and small interaction script
-are included as starting points for the classes and data attributes the renderer
-emits:
+CSS or JavaScript. The canonical stylesheet for those classes ships embedded in
+the `notion` package and is returned by `notion.StyleCSS()`, so it always
+matches the renderer version you build against. Serve it (or write it to a
+file) however your app prefers:
 
-- [`examples/notion.css`](examples/notion.css)
-- [`examples/notion.js`](examples/notion.js)
+```go
+http.HandleFunc("/notion.css", func(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/css; charset=utf-8")
+	io.WriteString(w, notion.StyleCSS())
+})
+```
 
 ```html
 <link rel="stylesheet" href="/notion.css">
@@ -131,23 +136,39 @@ emits:
 </main>
 ```
 
-The sample CSS includes the design tokens it needs, so it can be copied or
-served as a single file for quick starts. It also `@import`s the Pretendard and
-JetBrains Mono web fonts from public CDNs; self-host or drop those imports if you
-would rather not depend on third-party font hosts. The sample JS enables Notion
-tabs, multi-view database tabs, image lightboxes, code-copy buttons, and optional
-KaTeX hydration when `window.katex` is present. Treat both files as starting
-points and adjust typography, colors, layout, and interactions to your own site.
+The stylesheet is self-contained: design tokens included, no external imports
+or webfonts, and it works as a single file. It supports light and dark themes —
+set `data-theme="dark"` (or `"light"`) on the document root to force one, or
+leave the attribute off to follow the reader's `prefers-color-scheme`. To use
+webfonts (for example Pretendard and JetBrains Mono), load them yourself and
+override the `--font-sans` / `--font-mono` variables:
 
-`examples/fullapp` embeds the local sample stylesheet and interaction script
-with `go:embed`, while loading KaTeX CSS/JS from a pinned CDN URL.
+```css
+@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css');
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap');
+
+:root {
+  --font-sans: 'Pretendard Variable', Pretendard, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+}
+```
+
+A small sample interaction script, [`examples/notion.js`](examples/notion.js),
+covers the renderer's `data-*` hooks: Notion tabs, multi-view database tabs,
+image lightboxes, code-copy buttons, and optional KaTeX hydration when
+`window.katex` is present. The HTML and stylesheet work without it. Treat the
+script as a starting point and adapt interactions to your own site.
+
+`examples/fullapp` serves `notion.StyleCSS()` directly and embeds the sample
+interaction script with `go:embed`, while loading KaTeX CSS/JS from a pinned
+CDN URL.
 
 ### Code highlighting
 
 Code blocks are emitted as plain, escaped `<pre><code class="language-…">`
 elements; the renderer does not color syntax server-side. Apply your own CSS or
 add a client-side highlighter such as [Prism.js](https://prismjs.com) to
-colorize them. The sample stylesheet already styles a Prism-compatible code
+colorize them. The embedded stylesheet already styles a Prism-compatible code
 surface.
 
 ## Rendering Contract

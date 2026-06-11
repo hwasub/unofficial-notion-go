@@ -6,6 +6,9 @@
 // asset URLs, link paths, and render warnings; the emitted HTML escapes
 // untrusted text and only references URLs that pass the package's safety checks.
 //
+// StyleCSS returns the canonical stylesheet for the emitted notion-* classes;
+// it is embedded in the package so it always matches the renderer version.
+//
 // The actual fetching from Notion and normalization of its data into a Snapshot
 // live in the companion ingest package. Applications are responsible for their
 // own HTTP serving, storage, and transport when snapshots cross process

@@ -1,0 +1,107 @@
+/* Fullapp application chrome (top bar, home form). The Notion renderer
+   stylesheet is served separately from notion.StyleCSS(). */
+
+.fullapp-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: center;
+  padding: var(--space-3) max(var(--space-4), calc((100vw - 1120px) / 2));
+  border-bottom: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--bg-elev-1) 92%, transparent);
+  backdrop-filter: blur(10px);
+}
+
+.fullapp-brand {
+  color: var(--fg);
+  font-size: 14px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.fullapp-topbar__form,
+.fullapp-form__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-2);
+}
+
+.fullapp-topbar input,
+.fullapp-form input {
+  min-width: 0;
+  height: 40px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elev-2);
+  color: var(--fg);
+  font: inherit;
+}
+
+.fullapp-topbar button,
+.fullapp-form button {
+  height: 40px;
+  padding: 0 var(--space-4);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  background: var(--accent);
+  color: white;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.fullapp-home {
+  display: grid;
+  gap: var(--space-5);
+  width: min(720px, calc(100% - 40px));
+  margin: clamp(56px, 16vh, 160px) auto;
+}
+
+.fullapp-home h1 {
+  margin: 0;
+  color: var(--fg);
+  font-size: 34px;
+  line-height: 1.15;
+}
+
+.fullapp-form {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.fullapp-form label {
+  color: var(--fg-muted);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.fullapp-message {
+  margin: 0;
+  color: var(--danger);
+  font-weight: 650;
+}
+
+.fullapp-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .fullapp-topbar,
+  .fullapp-topbar__form,
+  .fullapp-form__row {
+    grid-template-columns: 1fr;
+  }
+
+  .fullapp-topbar {
+    position: static;
+  }
+}

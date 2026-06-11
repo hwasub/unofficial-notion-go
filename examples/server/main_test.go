@@ -1,8 +1,11 @@
 package main
 
 import (
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/hwasub/unofficial-notion-go/notion"
 )
 
 func TestSafeAssetContentTypeOnlyInlinesPassiveMedia(t *testing.T) {
@@ -56,5 +59,17 @@ func TestDocumentIncludesOptionalAssets(t *testing.T) {
 	html = document("Test", "<p>body</p>", false, false)
 	if strings.Contains(html, "notion.css") || strings.Contains(html, "notion.js") {
 		t.Fatalf("document included disabled assets: %s", html)
+	}
+}
+
+func TestHandleCSSDefaultsToEmbeddedStylesheet(t *testing.T) {
+	srv := &server{}
+	recorder := httptest.NewRecorder()
+	srv.handleCSS(recorder, httptest.NewRequest("GET", "/notion.css", nil))
+	if got := recorder.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/css") {
+		t.Fatalf("content type = %q", got)
+	}
+	if recorder.Body.String() != notion.StyleCSS() {
+		t.Fatal("embedded stylesheet not served verbatim")
 	}
 }

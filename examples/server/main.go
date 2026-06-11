@@ -4,9 +4,11 @@
 //
 // Usage:
 //
-//	go run ./examples/server -addr :8080 -css examples/notion.css -js examples/notion.js
+//	go run ./examples/server -addr :8080 -js examples/notion.js
 //
-// Then open http://localhost:8080/ and paste a public Notion page URL.
+// Then open http://localhost:8080/ and paste a public Notion page URL. The
+// stylesheet served at /notion.css defaults to the embedded notion.StyleCSS();
+// pass -css to serve a custom file instead, or -css none to skip it.
 //
 // This is a demonstration, not production code: assets are cached in memory and
 // never evicted, non-media files are served as downloads, there is no
@@ -35,7 +37,7 @@ import (
 
 func main() {
 	addr := flag.String("addr", ":8080", "listen address")
-	cssPath := flag.String("css", "examples/notion.css", "stylesheet served at /notion.css")
+	cssPath := flag.String("css", "", "stylesheet served at /notion.css (default: embedded notion.StyleCSS(); \"none\" to skip)")
 	jsPath := flag.String("js", "examples/notion.js", "script served at /notion.js")
 	flag.Parse()
 
@@ -50,7 +52,7 @@ func main() {
 	mux.HandleFunc("/", srv.handleIndex)
 	mux.HandleFunc("/render", srv.handleRender)
 	mux.HandleFunc("/assets/", srv.handleAsset)
-	if *cssPath != "" {
+	if *cssPath != "none" {
 		mux.HandleFunc("/notion.css", srv.handleCSS)
 	}
 	if *jsPath != "" {
@@ -121,7 +123,7 @@ func (s *server) handleRender(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	io.WriteString(w, document(snapshot.Page.Title, body, s.cssPath != "", s.jsPath != ""))
+	io.WriteString(w, document(snapshot.Page.Title, body, s.cssPath != "none", s.jsPath != ""))
 }
 
 func (s *server) proxyAssets(ctx context.Context, assets []ingest.AssetSnapshot) map[string]string {
@@ -183,6 +185,11 @@ func (s *server) handleAsset(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleCSS(w http.ResponseWriter, r *http.Request) {
+	if s.cssPath == "" {
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+		io.WriteString(w, notion.StyleCSS())
+		return
+	}
 	http.ServeFile(w, r, s.cssPath)
 }
 
