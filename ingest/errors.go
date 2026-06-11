@@ -4,6 +4,33 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/hwasub/unofficial-notion-go/notionapi"
+)
+
+// Stable machine-readable codes carried in HTTPError.Code. Callers can match
+// on these instead of hardcoding wire strings. Limit and transport codes are
+// shared with (and forwarded from) the notionapi package.
+const (
+	// ErrorCodeMaxBlocksExceeded marks a page block-count limit failure.
+	ErrorCodeMaxBlocksExceeded = notionapi.ErrorCodeMaxBlocksExceeded
+	// ErrorCodeMaxResponseBytesExceeded marks a response-size limit failure.
+	ErrorCodeMaxResponseBytesExceeded = notionapi.ErrorCodeMaxResponseBytesExceeded
+	// ErrorCodeUnexpectedContentType marks an upstream response that was not JSON.
+	ErrorCodeUnexpectedContentType = notionapi.ErrorCodeUnexpectedContentType
+	// ErrorCodeMalformedResponse marks an upstream response that exceeded
+	// structural limits (nesting depth, array length).
+	ErrorCodeMalformedResponse = notionapi.ErrorCodeMalformedResponse
+	// ErrorCodeFetchTimeout marks a page fetch that exceeded the request timeout.
+	ErrorCodeFetchTimeout = "notion_fetch_timeout"
+	// ErrorCodeRateLimited marks an upstream 429 response.
+	ErrorCodeRateLimited = "notion_rate_limited"
+	// ErrorCodePageNotFound marks a page that does not exist or is not public.
+	ErrorCodePageNotFound = "notion_page_not_found"
+	// ErrorCodeUpstreamError marks any other upstream Notion failure.
+	ErrorCodeUpstreamError = "notion_upstream_error"
+	// ErrorCodeInternal marks an unclassified internal failure.
+	ErrorCodeInternal = "internal_error"
 )
 
 // HTTPError is an ingest failure carrying an HTTP status code, a stable

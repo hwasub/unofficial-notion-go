@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"math"
 	"os"
 	"strconv"
 
@@ -135,8 +136,16 @@ func parseIntValue(value any) (int, bool) {
 	case int:
 		return typed, true
 	case int64:
+		if typed > math.MaxInt || typed < math.MinInt {
+			return 0, false
+		}
 		return int(typed), true
 	case float64:
+		// float64(math.MaxInt) rounds up to exactly 2^63, hence >= on the
+		// upper bound; math.MinInt (-2^63) converts exactly.
+		if math.IsNaN(typed) || math.IsInf(typed, 0) || typed < math.MinInt || typed >= float64(math.MaxInt) {
+			return 0, false
+		}
 		return int(typed), true
 	case jsonNumber:
 		parsed, err := strconv.Atoi(typed.String())

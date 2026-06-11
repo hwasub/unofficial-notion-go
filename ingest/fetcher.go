@@ -87,13 +87,13 @@ func FetchSnapshot(ctx context.Context, request FetchRequest, limits RequestLimi
 		MaxBlocks:               limits.MaxBlocks,
 	})
 	if err == nil {
+		// Re-validate at the trust boundary: PageClient is an interface, so the
+		// client's own MaxBlocks enforcement cannot be assumed. No post-repair
+		// check is needed — repair guards every merge before performing it.
 		err = rejectRecordMapBlockLimit(recordMap, limits.MaxBlocks)
 	}
 	if err == nil {
 		err = repairCollectionQueries(pageCtx, client, recordMap, limits.MaxBlocks, log)
-	}
-	if err == nil {
-		err = rejectRecordMapBlockLimit(recordMap, limits.MaxBlocks)
 	}
 	if err != nil {
 		mapped := mapNotionError(err)
@@ -191,19 +191,27 @@ func mapNotionError(cause error) *HTTPError {
 		return nil
 	}
 	if errors.Is(cause, context.DeadlineExceeded) {
-		return NewHTTPError("Notion page fetch timed out", 504, "notion_fetch_timeout")
+		return NewHTTPError("Notion page fetch timed out", 504, ErrorCodeFetchTimeout)
 	}
 	if httpErr, ok := AsHTTPError(cause); ok {
 		if httpErr.StatusCode == 429 {
-			httpErr.Code = "notion_rate_limited"
+			httpErr.Code = ErrorCodeRateLimited
 		}
 		return httpErr
 	}
 	var upstream *notionapi.HTTPError
 	if errors.As(cause, &upstream) {
-		if upstream.Code == notionapi.ErrorCodeMaxResponseBytesExceeded || upstream.Code == notionapi.ErrorCodeMaxBlocksExceeded {
+		switch upstream.Code {
+		case notionapi.ErrorCodeMaxResponseBytesExceeded, notionapi.ErrorCodeMaxBlocksExceeded:
 			return &HTTPError{
 				StatusCode:   http.StatusRequestEntityTooLarge,
+				Code:         upstream.Code,
+				Message:      upstream.Message,
+				RetryAfterMS: upstream.RetryAfterMS,
+			}
+		case notionapi.ErrorCodeUnexpectedContentType, notionapi.ErrorCodeMalformedResponse:
+			return &HTTPError{
+				StatusCode:   http.StatusBadGateway,
 				Code:         upstream.Code,
 				Message:      upstream.Message,
 				RetryAfterMS: upstream.RetryAfterMS,
@@ -211,21 +219,21 @@ func mapNotionError(cause error) *HTTPError {
 		}
 		switch upstream.StatusCode {
 		case 401, 403:
-			return &HTTPError{StatusCode: upstream.StatusCode, Code: "notion_upstream_error", Message: upstream.Message, RetryAfterMS: upstream.RetryAfterMS}
+			return &HTTPError{StatusCode: upstream.StatusCode, Code: ErrorCodeUpstreamError, Message: upstream.Message, RetryAfterMS: upstream.RetryAfterMS}
 		case 404:
-			return &HTTPError{StatusCode: 404, Code: "notion_page_not_found", Message: upstream.Message, RetryAfterMS: upstream.RetryAfterMS}
+			return &HTTPError{StatusCode: 404, Code: ErrorCodePageNotFound, Message: upstream.Message, RetryAfterMS: upstream.RetryAfterMS}
 		case 429:
-			return &HTTPError{StatusCode: 429, Code: "notion_rate_limited", Message: upstream.Message, RetryAfterMS: upstream.RetryAfterMS}
+			return &HTTPError{StatusCode: 429, Code: ErrorCodeRateLimited, Message: upstream.Message, RetryAfterMS: upstream.RetryAfterMS}
 		default:
 			if upstream.StatusCode >= 500 {
-				return &HTTPError{StatusCode: 502, Code: "notion_upstream_error", Message: upstream.Message, RetryAfterMS: upstream.RetryAfterMS}
+				return &HTTPError{StatusCode: 502, Code: ErrorCodeUpstreamError, Message: upstream.Message, RetryAfterMS: upstream.RetryAfterMS}
 			}
 		}
 	}
 	if strings.Contains(strings.ToLower(cause.Error()), "notion page not found") {
-		return NewHTTPError(cause.Error(), 404, "notion_page_not_found")
+		return NewHTTPError(cause.Error(), 404, ErrorCodePageNotFound)
 	}
-	return &HTTPError{StatusCode: 500, Code: "internal_error", Message: cause.Error()}
+	return &HTTPError{StatusCode: 500, Code: ErrorCodeInternal, Message: cause.Error()}
 }
 
 func recordMapBlockCount(recordMap map[string]any) int {
@@ -243,7 +251,7 @@ func recordMapBlockIDs(recordMap map[string]any) []string {
 
 func rejectRecordMapBlockLimit(recordMap map[string]any, maxBlocks int) error {
 	if maxBlocks > 0 && recordMapBlockCount(recordMap) > maxBlocks {
-		return NewHTTPError("max block limit exceeded", http.StatusRequestEntityTooLarge, "max_blocks_exceeded")
+		return NewHTTPError("max block limit exceeded", http.StatusRequestEntityTooLarge, ErrorCodeMaxBlocksExceeded)
 	}
 	return nil
 }

@@ -11,87 +11,141 @@ import (
 	"github.com/hwasub/unofficial-notion-go/notionapi"
 )
 
+// Bounds on collection repair work per page. Repair is already double-bounded
+// by the request timeout (the ctx deadline) and MaxBlocks (checked before every
+// merge); these constants additionally cap the upstream call fan-out and the
+// fixpoint iteration count for pathologically self-referencing pages.
+const (
+	maxCollectionRepairPasses = 8
+	maxCollectionRepairCalls  = 100
+)
+
 func repairCollectionQueries(ctx context.Context, client PageClient, recordMap map[string]any, maxBlocks int, log func(string, map[string]any)) error {
 	blocks := notionrecordmap.AsMap(recordMap["block"])
 	if blocks == nil {
 		return nil
 	}
 	collectionQueries := ensureRecordMap(recordMap, "collection_query")
-	keys := make([]string, 0, len(blocks))
-	for key := range blocks {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		block := notionrecordmap.AsMap(notionrecordmap.Unbox(blocks[key]))
-		if block == nil {
-			continue
+	// Each (collection, view) pair is decided at most once per call: a pair is
+	// marked processed when its repair succeeds, fails (no retry storms), or
+	// turns out not to be needed.
+	processed := map[string]struct{}{}
+	calls := 0
+	for pass := 0; pass < maxCollectionRepairPasses; pass++ {
+		// Re-snapshot the block keys every pass: repair merges can add new
+		// collection_view blocks that earlier passes have not seen.
+		keys := make([]string, 0, len(blocks))
+		for key := range blocks {
+			keys = append(keys, key)
 		}
-		blockType := notionrecordmap.StringValue(block["type"])
-		if blockType != "collection_view" && blockType != "collection_view_page" {
-			continue
-		}
-		collectionID := firstNonEmpty(notionrecordmap.StringValue(block["collection_id"]), collectionPointerID(block["format"]))
-		viewIDs := arrayStrings(block["view_ids"])
-		if collectionID == "" || len(viewIDs) == 0 {
-			continue
-		}
-		for _, viewID := range viewIDs {
-			collectionView := notionrecordmap.AsMap(notionrecordmap.Unbox(notionrecordmap.AsMap(recordMap["collection_view"])[viewID]))
-			if !isRepairableCollectionView(collectionView) {
+		sort.Strings(keys)
+		progressed := false
+		for _, key := range keys {
+			block := notionrecordmap.AsMap(notionrecordmap.Unbox(blocks[key]))
+			if block == nil {
 				continue
 			}
-			existing := notionrecordmap.AsMap(collectionQueries[collectionID])
-			existingViewQuery := any(nil)
-			if existing != nil {
-				existingViewQuery = existing[viewID]
-			}
-			if !collectionQueryNeedsRepair(existingViewQuery, collectionView, recordMap) {
+			blockType := notionrecordmap.StringValue(block["type"])
+			if blockType != "collection_view" && blockType != "collection_view_page" {
 				continue
 			}
-			collectionData, err := client.GetCollectionData(ctx, collectionID, viewID, collectionView, notionapi.CollectionOptions{
-				Limit: 999,
-				SpaceID: firstNonEmpty(
-					notionrecordmap.StringValue(block["space_id"]),
-					collectionPointerSpaceID(block["format"]),
-					collectionPointerSpaceID(collectionView["format"]),
-				),
-			})
-			if err != nil {
-				log("notion_collection_query_repair_failed", map[string]any{
-					"page_id":       recordMapRootPageID(recordMap),
-					"collection_id": collectionID,
-					"view_id":       viewID,
-					"view_type":     notionrecordmap.StringValue(collectionView["type"]),
-					"message":       err.Error(),
-				})
+			collectionID := firstNonEmpty(notionrecordmap.StringValue(block["collection_id"]), collectionPointerID(block["format"]))
+			viewIDs := dedupeStrings(arrayStrings(block["view_ids"]))
+			if collectionID == "" || len(viewIDs) == 0 {
 				continue
 			}
-			sourceRecordMap := notionrecordmap.AsMap(collectionData["recordMap"])
-			if err := rejectMergedRecordMapBlockLimit(recordMap, sourceRecordMap, maxBlocks); err != nil {
-				return err
-			}
-			mergeRawRecordMap(recordMap, sourceRecordMap)
-			reducerResults := notionrecordmap.AsMap(notionrecordmap.AsMap(collectionData["result"])["reducerResults"])
-			if reducerResults == nil {
-				if raw := notionrecordmap.AsMap(collectionData["result"])["reducerResults"]; raw != nil {
-					byCollection := existingOrNew(collectionQueries, collectionID)
-					byCollection[viewID] = raw
+			for _, viewID := range viewIDs {
+				pairKey := collectionID + "\x00" + viewID
+				if _, done := processed[pairKey]; done {
+					continue
 				}
-				continue
+				collectionView := notionrecordmap.AsMap(notionrecordmap.Unbox(notionrecordmap.AsMap(recordMap["collection_view"])[viewID]))
+				if !isRepairableCollectionView(collectionView) {
+					continue
+				}
+				existing := notionrecordmap.AsMap(collectionQueries[collectionID])
+				existingViewQuery := any(nil)
+				if existing != nil {
+					existingViewQuery = existing[viewID]
+				}
+				if !collectionQueryNeedsRepair(existingViewQuery, collectionView, recordMap) {
+					processed[pairKey] = struct{}{}
+					continue
+				}
+				if calls >= maxCollectionRepairCalls {
+					log("notion_collection_repair_budget_exhausted", map[string]any{
+						"page_id": recordMapRootPageID(recordMap),
+						"calls":   calls,
+					})
+					return nil
+				}
+				calls++
+				progressed = true
+				processed[pairKey] = struct{}{}
+				collectionData, err := client.GetCollectionData(ctx, collectionID, viewID, collectionView, notionapi.CollectionOptions{
+					Limit: 999,
+					SpaceID: firstNonEmpty(
+						notionrecordmap.StringValue(block["space_id"]),
+						collectionPointerSpaceID(block["format"]),
+						collectionPointerSpaceID(collectionView["format"]),
+					),
+				})
+				if err != nil {
+					log("notion_collection_query_repair_failed", map[string]any{
+						"page_id":       recordMapRootPageID(recordMap),
+						"collection_id": collectionID,
+						"view_id":       viewID,
+						"view_type":     notionrecordmap.StringValue(collectionView["type"]),
+						"message":       err.Error(),
+					})
+					continue
+				}
+				sourceRecordMap := notionrecordmap.AsMap(collectionData["recordMap"])
+				if err := rejectMergedRecordMapBlockLimit(recordMap, sourceRecordMap, maxBlocks); err != nil {
+					return err
+				}
+				mergeRawRecordMap(recordMap, sourceRecordMap)
+				reducerResults := notionrecordmap.AsMap(notionrecordmap.AsMap(collectionData["result"])["reducerResults"])
+				if reducerResults == nil {
+					if raw := notionrecordmap.AsMap(collectionData["result"])["reducerResults"]; raw != nil {
+						byCollection := existingOrNew(collectionQueries, collectionID)
+						// Never clobber an existing (possibly usable) query with
+						// a value we could not interpret as a map.
+						if byCollection[viewID] == nil {
+							byCollection[viewID] = raw
+						}
+					}
+					continue
+				}
+				byCollection := existingOrNew(collectionQueries, collectionID)
+				previousQuery := notionrecordmap.AsMap(byCollection[viewID])
+				if previousQuery == nil {
+					previousQuery = map[string]any{}
+				}
+				for key, value := range reducerResults {
+					previousQuery[key] = value
+				}
+				byCollection[viewID] = previousQuery
 			}
-			byCollection := existingOrNew(collectionQueries, collectionID)
-			previousQuery := notionrecordmap.AsMap(byCollection[viewID])
-			if previousQuery == nil {
-				previousQuery = map[string]any{}
-			}
-			for key, value := range reducerResults {
-				previousQuery[key] = value
-			}
-			byCollection[viewID] = previousQuery
+		}
+		if !progressed {
+			break
 		}
 	}
 	return nil
+}
+
+func dedupeStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 func rejectMergedRecordMapBlockLimit(target map[string]any, source map[string]any, maxBlocks int) error {
@@ -105,7 +159,7 @@ func rejectMergedRecordMapBlockLimit(target map[string]any, source map[string]an
 			count++
 		}
 		if count > maxBlocks {
-			return NewHTTPError("max block limit exceeded", http.StatusRequestEntityTooLarge, "max_blocks_exceeded")
+			return NewHTTPError("max block limit exceeded", http.StatusRequestEntityTooLarge, ErrorCodeMaxBlocksExceeded)
 		}
 	}
 	return nil

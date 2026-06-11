@@ -3,6 +3,7 @@ package ingest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"reflect"
 	"strings"
@@ -19,6 +20,7 @@ type fakePageClient struct {
 	getPageErr          error
 	collectionCalls     []collectionCall
 	collectionData      map[string]any
+	collectionDataFunc  func(collectionID, viewID string) (map[string]any, error)
 	signedURLCalledWith []string
 	signedURLErr        error
 }
@@ -51,6 +53,9 @@ func (f *fakePageClient) AddSignedURLs(_ context.Context, recordMap map[string]a
 
 func (f *fakePageClient) GetCollectionData(_ context.Context, collectionID string, viewID string, _ any, opts notionapi.CollectionOptions) (map[string]any, error) {
 	f.collectionCalls = append(f.collectionCalls, collectionCall{CollectionID: collectionID, ViewID: viewID, SpaceID: opts.SpaceID})
+	if f.collectionDataFunc != nil {
+		return f.collectionDataFunc(collectionID, viewID)
+	}
 	return cloneMap(f.collectionData), nil
 }
 
@@ -334,6 +339,144 @@ func TestCollectionQueryNeedsRepairForGroupedViews(t *testing.T) {
 	}
 	if !collectionQueryNeedsRepair(query, view, recordMap) {
 		t.Fatal("expected grouped collection query to need repair")
+	}
+}
+
+// A collection_view block discovered while merging repair results must itself
+// be repaired on a later pass, not silently skipped.
+func TestRepairProcessesCollectionViewsDiscoveredDuringRepair(t *testing.T) {
+	collectionA, viewA := "aaaa-collection", "aaaa-view"
+	collectionB, viewB := "bbbb-collection", "bbbb-view"
+	client := &fakePageClient{}
+	client.collectionDataFunc = func(collectionID, _ string) (map[string]any, error) {
+		if collectionID == collectionA {
+			return map[string]any{
+				"result": map[string]any{"reducerResults": map[string]any{
+					"collection_group_results": map[string]any{"blockIds": []any{}},
+				}},
+				"recordMap": map[string]any{
+					"block": map[string]any{
+						"bbbb-block": map[string]any{"value": map[string]any{"id": "bbbb-block", "type": "collection_view", "collection_id": collectionB, "view_ids": []any{viewB}}},
+					},
+					"collection_view": map[string]any{
+						viewB: map[string]any{"value": map[string]any{"id": viewB, "type": "table", "format": map[string]any{}}},
+					},
+				},
+			}, nil
+		}
+		return map[string]any{
+			"result": map[string]any{"reducerResults": map[string]any{
+				"collection_group_results": map[string]any{"blockIds": []any{}},
+			}},
+		}, nil
+	}
+	recordMap := map[string]any{
+		"block": map[string]any{
+			"aaaa-block": map[string]any{"value": map[string]any{"id": "aaaa-block", "type": "collection_view", "collection_id": collectionA, "view_ids": []any{viewA}}},
+		},
+		"collection_view": map[string]any{
+			viewA: map[string]any{"value": map[string]any{"id": viewA, "type": "table", "format": map[string]any{}}},
+		},
+	}
+	if err := repairCollectionQueries(context.Background(), client, recordMap, 0, func(string, map[string]any) {}); err != nil {
+		t.Fatal(err)
+	}
+	want := []collectionCall{
+		{CollectionID: collectionA, ViewID: viewA},
+		{CollectionID: collectionB, ViewID: viewB},
+	}
+	if !reflect.DeepEqual(client.collectionCalls, want) {
+		t.Fatalf("collection calls = %#v, want %#v", client.collectionCalls, want)
+	}
+}
+
+// When the repair response carries reducerResults that cannot be read as a
+// map, an existing (possibly usable) query must not be clobbered by it.
+func TestRepairPreservesExistingQueryWhenReducerResultsMalformed(t *testing.T) {
+	collectionID, viewID := "col-1", "view-1"
+	client := &fakePageClient{collectionData: map[string]any{
+		"result": map[string]any{"reducerResults": "garbage"},
+	}}
+	existingQuery := map[string]any{"collection_group_results": map[string]any{"blockIds": []any{"row-missing"}}}
+	recordMap := map[string]any{
+		"block": map[string]any{
+			"block-1": map[string]any{"value": map[string]any{"id": "block-1", "type": "collection_view", "collection_id": collectionID, "view_ids": []any{viewID}}},
+		},
+		"collection_view": map[string]any{
+			viewID: map[string]any{"value": map[string]any{"id": viewID, "type": "table", "format": map[string]any{}}},
+		},
+		"collection_query": map[string]any{
+			collectionID: map[string]any{viewID: existingQuery},
+		},
+	}
+	if err := repairCollectionQueries(context.Background(), client, recordMap, 0, func(string, map[string]any) {}); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.collectionCalls) != 1 {
+		t.Fatalf("collection calls = %#v, want exactly one", client.collectionCalls)
+	}
+	got := recordMap["collection_query"].(map[string]any)[collectionID].(map[string]any)[viewID]
+	if !reflect.DeepEqual(got, existingQuery) {
+		t.Fatalf("existing query clobbered: %#v", got)
+	}
+}
+
+func TestRepairDeduplicatesViewIDs(t *testing.T) {
+	collectionID, viewID := "col-1", "view-1"
+	client := &fakePageClient{collectionData: map[string]any{
+		"result": map[string]any{"reducerResults": map[string]any{
+			"collection_group_results": map[string]any{"blockIds": []any{}},
+		}},
+	}}
+	recordMap := map[string]any{
+		"block": map[string]any{
+			"block-1": map[string]any{"value": map[string]any{"id": "block-1", "type": "collection_view", "collection_id": collectionID, "view_ids": []any{viewID, viewID}}},
+		},
+		"collection_view": map[string]any{
+			viewID: map[string]any{"value": map[string]any{"id": viewID, "type": "table", "format": map[string]any{}}},
+		},
+	}
+	if err := repairCollectionQueries(context.Background(), client, recordMap, 0, func(string, map[string]any) {}); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.collectionCalls) != 1 {
+		t.Fatalf("collection calls = %#v, want exactly one", client.collectionCalls)
+	}
+}
+
+// A page whose views keep reporting "needs repair" must stop at the per-page
+// call budget with a degraded (but successful) result instead of fanning out
+// without bound.
+func TestRepairStopsAtCallBudget(t *testing.T) {
+	collectionID := "col-1"
+	viewIDs := make([]any, 0, maxCollectionRepairCalls*2)
+	collectionViews := map[string]any{}
+	for i := 0; i < maxCollectionRepairCalls*2; i++ {
+		viewID := fmt.Sprintf("view-%03d", i)
+		viewIDs = append(viewIDs, viewID)
+		collectionViews[viewID] = map[string]any{"value": map[string]any{"id": viewID, "type": "table", "format": map[string]any{}}}
+	}
+	client := &fakePageClient{collectionData: map[string]any{}}
+	recordMap := map[string]any{
+		"block": map[string]any{
+			"block-1": map[string]any{"value": map[string]any{"id": "block-1", "type": "collection_view", "collection_id": collectionID, "view_ids": viewIDs}},
+		},
+		"collection_view": collectionViews,
+	}
+	var budgetLogged bool
+	err := repairCollectionQueries(context.Background(), client, recordMap, 0, func(event string, _ map[string]any) {
+		if event == "notion_collection_repair_budget_exhausted" {
+			budgetLogged = true
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(client.collectionCalls); got != maxCollectionRepairCalls {
+		t.Fatalf("collection calls = %d, want %d", got, maxCollectionRepairCalls)
+	}
+	if !budgetLogged {
+		t.Fatal("expected notion_collection_repair_budget_exhausted log event")
 	}
 }
 
