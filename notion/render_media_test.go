@@ -935,3 +935,50 @@ func TestRenderPageRendersLocalMediaLabelsSafely(t *testing.T) {
 		t.Fatalf("rendered unsafe media label or Notion-hosted source: %s", html)
 	}
 }
+
+// Video and audio elements always carry an accessible name: the caption text
+// when present, otherwise the file label (mirroring image alt handling).
+func TestRenderPageVideoAndAudioAlwaysCarryAriaLabel(t *testing.T) {
+	const (
+		rootID  = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+		videoID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+		audioID = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+	)
+	recordMap := marshalRecordMap(t, map[string]any{
+		rootID: map[string]any{
+			"id":      rootID,
+			"type":    "page",
+			"content": []string{videoID, audioID},
+		},
+		videoID: map[string]any{
+			"id":   videoID,
+			"type": "video",
+			"properties": map[string]any{
+				"source":  [][]any{{"https://file.notion.so/workspace/video.mp4?signature=stale"}},
+				"caption": [][]any{{"Launch <recap>"}},
+			},
+		},
+		audioID: map[string]any{
+			"id":   audioID,
+			"type": "audio",
+			"properties": map[string]any{
+				"source":  [][]any{{"https://file.notion.so/workspace/episode.mp3?signature=stale"}},
+				"caption": [][]any{{"Episode one"}},
+			},
+		},
+	})
+
+	html, err := RenderPage(RenderInput{
+		RecordMap: recordMap,
+		PageID:    rootID,
+		AssetURLs: map[string]string{
+			videoID: "/notion-assets/video/video.mp4",
+			audioID: "/notion-assets/audio/episode.mp3",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertContains(t, html, `<video controls preload="metadata" src="/notion-assets/video/video.mp4" aria-label="Launch &lt;recap&gt;"></video>`)
+	assertContains(t, html, `<audio controls preload="metadata" src="/notion-assets/audio/episode.mp3" aria-label="Episode one"></audio>`)
+}

@@ -644,6 +644,89 @@ func TestRenderCollectionEvaluatesFormulaSchemaWhenValueMissing(t *testing.T) {
 	assertContains(t, html, `<td><span class="notion-property-checkbox"><input type="checkbox" disabled aria-label="Checked" checked></span></td>`)
 }
 
+func TestRenderCollectionEvaluatesMathFormulaOperators(t *testing.T) {
+	const (
+		rootID       = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+		viewBlockID  = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+		collectionID = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+		viewID       = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+		rowID        = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+	)
+	recordMap := marshalRecordMapObject(t, map[string]any{
+		"block": map[string]any{
+			rootID: map[string]any{
+				"id":      rootID,
+				"type":    "page",
+				"content": []string{viewBlockID},
+			},
+			viewBlockID: map[string]any{
+				"id":            viewBlockID,
+				"type":          "collection_view",
+				"collection_id": collectionID,
+				"view_ids":      []string{viewID},
+			},
+			rowID: map[string]any{
+				"id":           rowID,
+				"type":         "page",
+				"parent_id":    collectionID,
+				"parent_table": "collection",
+				"properties": map[string]any{
+					"title": [][]any{{"Math row"}},
+					"num":   [][]any{{"10"}},
+				},
+			},
+		},
+		"collection": map[string]any{
+			collectionID: map[string]any{
+				"id":   collectionID,
+				"name": [][]any{{"Math Eval"}},
+				"schema": map[string]any{
+					"title": map[string]any{"name": "Name", "type": "title"},
+					"num":   map[string]any{"name": "Num", "type": "number"},
+					"half": map[string]any{
+						"name": "Half",
+						"type": "formula",
+						"formula": map[string]any{
+							"type":        "operator",
+							"name":        "divide",
+							"result_type": "number",
+							"args": []any{
+								map[string]any{"type": "property", "id": "num", "name": "Num", "result_type": "number"},
+								map[string]any{"type": "constant", "value": "4", "value_type": "number", "result_type": "number"},
+							},
+						},
+					},
+				},
+			},
+		},
+		"collection_view": map[string]any{
+			viewID: map[string]any{
+				"id":   viewID,
+				"type": "table",
+				"format": map[string]any{
+					"table_properties": []map[string]any{
+						{"property": "title", "visible": true},
+						{"property": "half", "visible": true},
+					},
+				},
+			},
+		},
+		"collection_query": map[string]any{
+			collectionID: map[string]any{
+				viewID: map[string]any{
+					"collection_group_results": map[string]any{"blockIds": []string{rowID}},
+				},
+			},
+		},
+	})
+
+	html, err := RenderPage(RenderInput{RecordMap: recordMap, PageID: rootID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertContains(t, html, `<td><span class="notion-property-number">2.5</span></td>`)
+}
+
 func TestFormatCollectionNumberMatchesNotionCurrencyPrecision(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -1491,4 +1574,137 @@ func TestRenderPageRendersCalendarAndTimelineCollectionViews(t *testing.T) {
 	assertContains(t, html, `<section class="notion-collection-timeline__unscheduled"><h3>No date</h3>`)
 	assertContains(t, html, `<strong>Scheduled item</strong>`)
 	assertContains(t, html, `<strong>Unscheduled item</strong>`)
+}
+
+// Calendar and timeline views honor explicit hide settings: hidden date group
+// specs and *_hide_unscheduled flags. With no signal (the test above) all
+// groups and the "No date" section stay visible.
+func TestRenderPageHonorsHiddenCalendarAndTimelineGroups(t *testing.T) {
+	const (
+		rootID       = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+		calendarID   = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+		timelineID   = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+		row1ID       = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+		row2ID       = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+		row3ID       = "99999999-9999-9999-9999-999999999999"
+		collectionID = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+		calendarView = "11111111-1111-1111-1111-111111111111"
+		timelineView = "22222222-2222-2222-2222-222222222222"
+	)
+	recordMap := marshalRecordMapObject(t, map[string]any{
+		"block": map[string]any{
+			rootID: map[string]any{
+				"id":      rootID,
+				"type":    "page",
+				"content": []string{calendarID, timelineID},
+			},
+			calendarID: map[string]any{
+				"id":            calendarID,
+				"type":          "collection_view",
+				"collection_id": collectionID,
+				"view_ids":      []string{calendarView},
+			},
+			timelineID: map[string]any{
+				"id":            timelineID,
+				"type":          "collection_view",
+				"collection_id": collectionID,
+				"view_ids":      []string{timelineView},
+			},
+			row1ID: map[string]any{
+				"id":   row1ID,
+				"type": "page",
+				"properties": map[string]any{
+					"title": [][]any{{"Hidden day item"}},
+					"due": [][]any{{"‣", [][]any{{"d", map[string]any{
+						"type":       "date",
+						"start_date": "2026-06-01",
+					}}}}},
+				},
+			},
+			row2ID: map[string]any{
+				"id":   row2ID,
+				"type": "page",
+				"properties": map[string]any{
+					"title": [][]any{{"Unscheduled item"}},
+				},
+			},
+			row3ID: map[string]any{
+				"id":   row3ID,
+				"type": "page",
+				"properties": map[string]any{
+					"title": [][]any{{"Visible day item"}},
+					"due": [][]any{{"‣", [][]any{{"d", map[string]any{
+						"type":       "date",
+						"start_date": "2026-06-03",
+					}}}}},
+				},
+			},
+		},
+		"collection": map[string]any{
+			collectionID: map[string]any{
+				"id":   collectionID,
+				"name": [][]any{{"Schedule"}},
+				"schema": map[string]any{
+					"title": map[string]any{"name": "Name", "type": "title"},
+					"due":   map[string]any{"name": "Due", "type": "date"},
+				},
+			},
+		},
+		"collection_view": map[string]any{
+			calendarView: map[string]any{
+				"id":   calendarView,
+				"type": "calendar",
+				"name": "Calendar",
+				"format": map[string]any{
+					"calendar_by":               "due",
+					"calendar_hide_unscheduled": true,
+					"collection_groups": []map[string]any{
+						{
+							"property": "due",
+							"value":    map[string]any{"type": "date", "value": map[string]any{"range": map[string]any{"start_date": "2026-06-01"}}},
+							"hidden":   true,
+						},
+					},
+					"calendar_properties": []map[string]any{
+						{"property": "title", "visible": true},
+					},
+				},
+			},
+			timelineView: map[string]any{
+				"id":   timelineView,
+				"type": "timeline",
+				"name": "Timeline",
+				"format": map[string]any{
+					"timeline_by":      map[string]any{"property": "due"},
+					"hide_unscheduled": true,
+					"timeline_properties": []map[string]any{
+						{"property": "title", "visible": true},
+					},
+				},
+			},
+		},
+		"collection_query": map[string]any{
+			collectionID: map[string]any{
+				calendarView: map[string]any{
+					"collection_group_results": map[string]any{"blockIds": []string{row1ID, row2ID, row3ID}},
+				},
+				timelineView: map[string]any{
+					"collection_group_results": map[string]any{"blockIds": []string{row2ID, row3ID}},
+				},
+			},
+		},
+	})
+
+	html, err := RenderPage(RenderInput{RecordMap: recordMap, PageID: rootID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Calendar: the 2026-06-01 group spec is hidden, unscheduled is hidden.
+	assertContains(t, html, `<time datetime="2026-06-03">`)
+	assertNotContains(t, html, `<time datetime="2026-06-01">`)
+	assertNotContains(t, html, `notion-collection-calendar__day--unscheduled`)
+	// Timeline: hide_unscheduled removes the "No date" section.
+	assertNotContains(t, html, `notion-collection-timeline__unscheduled`)
+	assertNotContains(t, html, `<strong>Unscheduled item</strong>`)
+	assertContains(t, html, `<strong>Visible day item</strong>`)
 }

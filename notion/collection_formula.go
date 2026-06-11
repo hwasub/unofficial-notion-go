@@ -137,6 +137,8 @@ func renderCollectionComputedSingleValue(value any, resultType string, schema co
 		return renderPhoneLink(computedPlainText(value))
 	case "select", "multi_select", "status":
 		return renderCollectionPills(collectionPlainValuesFromText(computedPlainText(value)), schema)
+	case "unique_id":
+		return renderCollectionUniqueID(computedPlainText(value), schema)
 	case "string", "text", "title", "rich_text":
 		if rich := richTextWithResolver(value, notionMentionResolver(rm, input)); rich != "" {
 			return rich
@@ -363,6 +365,81 @@ func evalCollectionFormulaFunction(data map[string]any, ctx formulaEvalContext) 
 			return leftNumber + rightNumber, true
 		}
 		return formulaString(left) + formulaString(right), true
+	case "subtract", "multiply", "divide", "mod", "pow":
+		leftRaw, okLeft := arg(0)
+		rightRaw, okRight := arg(1)
+		left, leftOK := formulaNumber(leftRaw)
+		right, rightOK := formulaNumber(rightRaw)
+		if !okLeft || !okRight || !leftOK || !rightOK {
+			return nil, false
+		}
+		var result float64
+		switch name {
+		case "subtract":
+			result = left - right
+		case "multiply":
+			result = left * right
+		case "divide":
+			if right == 0 {
+				return nil, false
+			}
+			result = left / right
+		case "mod":
+			if right == 0 {
+				return nil, false
+			}
+			// math.Mod matches the JS % remainder of Notion's engine: the
+			// result takes the dividend's sign.
+			result = math.Mod(left, right)
+		default:
+			result = math.Pow(left, right)
+		}
+		return formulaFiniteNumber(result)
+	case "unaryMinus", "unaryPlus", "toNumber", "abs", "sqrt", "floor", "ceil", "round":
+		valueRaw, okValue := arg(0)
+		value, valueOK := formulaNumber(valueRaw)
+		if !okValue || !valueOK {
+			return nil, false
+		}
+		var result float64
+		switch name {
+		case "unaryMinus":
+			result = -value
+		case "unaryPlus", "toNumber":
+			result = value
+		case "abs":
+			result = math.Abs(value)
+		case "sqrt":
+			if value < 0 {
+				return nil, false
+			}
+			result = math.Sqrt(value)
+		case "floor":
+			result = math.Floor(value)
+		case "ceil":
+			result = math.Ceil(value)
+		default:
+			// JS Math.round half-up semantics (Notion's engine), which differs
+			// from Go's math.Round for negative halves: round(-0.5) is -0.
+			result = math.Floor(value + 0.5)
+		}
+		return formulaFiniteNumber(result)
+	case "min", "max":
+		if len(args) == 0 {
+			return nil, false
+		}
+		best := 0.0
+		for i := range args {
+			valueRaw, okValue := arg(i)
+			value, valueOK := formulaNumber(valueRaw)
+			if !okValue || !valueOK {
+				return nil, false
+			}
+			if i == 0 || (name == "min" && value < best) || (name == "max" && value > best) {
+				best = value
+			}
+		}
+		return best, true
 	case "concat":
 		var b strings.Builder
 		for i := range args {
@@ -457,6 +534,16 @@ func evalCollectionFormulaFunction(data map[string]any, ctx formulaEvalContext) 
 	}
 }
 
+// formulaFiniteNumber rejects NaN and ±Inf results so degenerate math
+// (overflow, huge exponents) degrades to Notion's precomputed value instead of
+// rendering "+Inf".
+func formulaFiniteNumber(value float64) (any, bool) {
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return nil, false
+	}
+	return value, true
+}
+
 func formulaNumber(value any) (float64, bool) {
 	switch typed := value.(type) {
 	case float64:
@@ -549,7 +636,10 @@ func parseFormulaDate(dateValue string, timeValue string) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	if parsed, err := time.Parse(time.RFC3339, dateValue); err == nil {
-		return parsed.UTC(), true
+		// Keep the value's own offset: converting to UTC here would shift the
+		// rendered wall-clock time (and hour()/minute()) away from what Notion
+		// shows for the same property.
+		return parsed, true
 	}
 	if timeValue != "" {
 		if parsed, err := time.ParseInLocation("2006-01-02 15:04", dateValue+" "+timeValue, time.UTC); err == nil {
@@ -594,15 +684,99 @@ func formulaDateAdd(date time.Time, amount float64, unit string) time.Time {
 	}
 }
 
+// maxFormatDatePattern bounds formatDate pattern length; the pattern comes
+// from the untrusted record map.
+const maxFormatDatePattern = 64
+
+// momentTokens maps Notion's moment/Luxon-style format tokens to formatted
+// output, longest match first per letter family. Both d/D mean day-of-month
+// here (Notion patterns use either case). Go has no single-digit 24-hour
+// token, so H renders zero-padded like HH.
+var momentTokens = []struct {
+	token  string
+	layout string
+}{
+	{"dddd", "Monday"},
+	{"ddd", "Mon"},
+	{"dd", "02"},
+	{"d", "2"},
+	{"DD", "02"},
+	{"D", "2"},
+	{"MMMM", "January"},
+	{"MMM", "Jan"},
+	{"MM", "01"},
+	{"M", "1"},
+	{"YYYY", "2006"},
+	{"yyyy", "2006"},
+	{"YY", "06"},
+	{"yy", "06"},
+	{"HH", "15"},
+	{"H", "15"},
+	{"hh", "03"},
+	{"h", "3"},
+	{"mm", "04"},
+	{"m", "4"},
+	{"ss", "05"},
+	{"s", "5"},
+	{"A", "PM"},
+	{"a", "pm"},
+}
+
+// formulaFormatDate renders a date through a Notion formatDate pattern by
+// substituting recognized tokens directly (never via a Go layout string, so
+// literal text can not be misread as layout tokens). Bracketed text passes
+// through verbatim, moment-style. Patterns with no recognized token at all
+// fall back to the default "Jan 2, 2006".
 func formulaFormatDate(date time.Time, pattern string) string {
-	switch strings.TrimSpace(pattern) {
-	case "dddd":
-		return date.Format("Monday")
-	case "MMM d, yyyy":
-		return date.Format("Jan 2, 2006")
-	default:
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" || len(pattern) > maxFormatDatePattern {
 		return date.Format("Jan 2, 2006")
 	}
+	var b strings.Builder
+	matched := false
+	runes := []rune(pattern)
+	for i := 0; i < len(runes); {
+		if runes[i] == '[' {
+			end := i + 1
+			for end < len(runes) && runes[end] != ']' {
+				end++
+			}
+			b.WriteString(string(runes[i+1 : end]))
+			if end < len(runes) {
+				end++
+			}
+			i = end
+			continue
+		}
+		token := matchMomentToken(runes[i:])
+		if token >= 0 {
+			b.WriteString(date.Format(momentTokens[token].layout))
+			i += len(momentTokens[token].token)
+			matched = true
+			continue
+		}
+		b.WriteRune(runes[i])
+		i++
+	}
+	if !matched {
+		return date.Format("Jan 2, 2006")
+	}
+	return b.String()
+}
+
+// matchMomentToken returns the index of the longest momentTokens entry that
+// prefixes rest, or -1. Tokens are ASCII, so rune positions equal byte counts.
+func matchMomentToken(rest []rune) int {
+	for i, candidate := range momentTokens {
+		token := []rune(candidate.token)
+		if len(token) > len(rest) {
+			continue
+		}
+		if string(rest[:len(token)]) == candidate.token {
+			return i
+		}
+	}
+	return -1
 }
 
 func computedListItems(value any) ([]any, bool) {

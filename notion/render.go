@@ -30,6 +30,22 @@ type RenderInput struct {
 //
 // Localizer must return PLAIN TEXT; the renderer escapes the result before
 // embedding it in HTML.
+//
+// The renderer currently requests these keys:
+//
+//	Navigation:    nav.breadcrumb
+//	Blocks/UI:     notion.copy, notion.copied, notion.copy_code,
+//	               notion.download_file, notion.embed, notion.pdf,
+//	               notion.tweet, notion.tabs, notion.toggle_details,
+//	               notion.untitled
+//	Databases:     notion.database_view, notion.database_views,
+//	               notion.no_date, notion.other, notion.result
+//	Warnings:      notion.render_warning_title, notion.warn_fetch,
+//	               notion.warn_asset_download, notion.warn_assets_truncated,
+//	               notion.warn_blocks_truncated
+//
+// New keys may be added in minor releases. Implementations must return the
+// supplied fallback for keys they do not recognize.
 type Localizer func(key, fallback string) string
 
 func (in RenderInput) t(key, fallback string) string {
@@ -108,6 +124,7 @@ type collectionProperty struct {
 	Type         string `json:"type"`
 	NumberFormat string `json:"number_format"`
 	ResultType   string `json:"result_type"`
+	Prefix       string `json:"prefix"` // unique_id prefix ("TASK" renders as TASK-12)
 	Formula      map[string]any
 	OptionColors map[string]string
 }
@@ -121,6 +138,10 @@ func (p *collectionProperty) UnmarshalJSON(data []byte) error {
 	p.Type = stringValue(raw["type"])
 	p.NumberFormat = firstNonEmpty(stringValue(raw["number_format"]), stringValue(raw["format"]))
 	p.ResultType = firstNonEmpty(stringValue(raw["result_type"]), stringValue(raw["value_type"]))
+	p.Prefix = stringValue(raw["prefix"])
+	if child, ok := raw["unique_id"].(map[string]any); ok {
+		p.Prefix = firstNonEmpty(p.Prefix, stringValue(child["prefix"]))
+	}
 	p.OptionColors = collectionOptionColors(raw["options"])
 	if child, ok := raw["formula"].(map[string]any); ok {
 		p.Formula = child
@@ -678,9 +699,11 @@ func renderVideoBlock(out *strings.Builder, rm recordMap, blk block, input Rende
 		renderMediaFigureStart(out, blk, "video")
 		out.WriteString(`<video controls preload="metadata"`)
 		out.WriteString(attr("src", src))
-		if richTextWithResolver(blk.Properties["caption"], notionMentionResolver(rm, input)) == "" {
-			out.WriteString(attr("aria-label", fileLabel(source)))
-		}
+		// Always give the element an accessible name (the caption text, or the
+		// file label) — figcaption alone does not name the video, mirroring
+		// how images always carry alt text. attr escapes the plain-text value.
+		caption := strings.TrimSpace(plainText(blk.Properties["caption"]))
+		out.WriteString(attr("aria-label", firstNonEmpty(caption, fileLabel(source))))
 		out.WriteString(`></video>`)
 		renderCaptionOrLabel(out, rm, blk, input, firstText(text, fileLabel(source)))
 		out.WriteString(`</figure>`)
@@ -697,9 +720,8 @@ func renderAudioBlock(out *strings.Builder, rm recordMap, blk block, input Rende
 		renderMediaFigureStart(out, blk, "audio")
 		out.WriteString(`<audio controls preload="metadata"`)
 		out.WriteString(attr("src", src))
-		if richTextWithResolver(blk.Properties["caption"], notionMentionResolver(rm, input)) == "" {
-			out.WriteString(attr("aria-label", fileLabel(source)))
-		}
+		caption := strings.TrimSpace(plainText(blk.Properties["caption"]))
+		out.WriteString(attr("aria-label", firstNonEmpty(caption, fileLabel(source))))
 		out.WriteString(`></audio>`)
 		renderCaptionOrLabel(out, rm, blk, input, firstText(text, fileLabel(source)))
 		out.WriteString(`</figure>`)

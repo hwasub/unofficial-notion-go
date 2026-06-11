@@ -11,6 +11,7 @@ import (
 type collectionGroup struct {
 	Key       string
 	Label     string
+	ValueType string // group value type from the spec (select, status, ...); used to construct result keys
 	RowIDs    []string
 	Hidden    bool
 	Collapsed bool
@@ -74,6 +75,7 @@ func collectionGroups(query collectionQuery, fallbackRowIDs []string, specs []co
 	// alphabetically by query-result key.
 	idsByKey := make(map[string][]string, len(keys))
 	keyByLabel := make(map[string]string, len(keys))
+	keyByNormalizedLabel := make(map[string]string, len(keys))
 	for _, key := range keys {
 		ids := normalizeRowIDs(query.Results[key].BlockIDs)
 		if len(ids) == 0 {
@@ -83,6 +85,11 @@ func collectionGroups(query collectionQuery, fallbackRowIDs []string, specs []co
 		if label := collectionGroupLabel(key); label != "" {
 			if _, ok := keyByLabel[label]; !ok {
 				keyByLabel[label] = key
+			}
+			if normalized := normalizeGroupLabel(label); normalized != "" {
+				if _, ok := keyByNormalizedLabel[normalized]; !ok {
+					keyByNormalizedLabel[normalized] = key
+				}
 			}
 		}
 	}
@@ -111,13 +118,47 @@ func collectionGroups(query collectionQuery, fallbackRowIDs []string, specs []co
 		})
 	}
 
-	// 1) Configured specs, in their declared order.
-	for _, spec := range specs {
+	// 1) Configured specs, in their declared order. Buckets are assigned to
+	//    specs in three global passes by match strength — exact decoded label,
+	//    then constructed result key, then normalized label — so a weaker
+	//    match by an earlier spec can never steal a bucket from a later spec's
+	//    stronger match. Emission still follows spec declaration order.
+	matchedKey := make([]string, len(specs))
+	claimed := map[string]struct{}{}
+	claim := func(index int, key string, ok bool) {
+		if !ok || matchedKey[index] != "" {
+			return
+		}
+		if _, taken := claimed[key]; taken {
+			return
+		}
+		claimed[key] = struct{}{}
+		matchedKey[index] = key
+	}
+	for i, spec := range specs {
 		if spec.Label == "" {
 			continue
 		}
 		key, ok := keyByLabel[spec.Label]
-		if !ok {
+		claim(i, key, ok)
+	}
+	for i, spec := range specs {
+		if matchedKey[i] != "" || spec.Label == "" {
+			continue
+		}
+		key, ok := specResultKey(spec, idsByKey)
+		claim(i, key, ok)
+	}
+	for i, spec := range specs {
+		if matchedKey[i] != "" || spec.Label == "" {
+			continue
+		}
+		key, ok := keyByNormalizedLabel[normalizeGroupLabel(spec.Label)]
+		claim(i, key, ok)
+	}
+	for i, spec := range specs {
+		key := matchedKey[i]
+		if key == "" {
 			continue
 		}
 		if _, done := usedKey[key]; done {
@@ -130,7 +171,12 @@ func collectionGroups(query collectionQuery, fallbackRowIDs []string, specs []co
 		if _, done := usedKey[key]; done {
 			continue
 		}
-		emit(key, specByLabel[collectionGroupLabel(key)])
+		label := collectionGroupLabel(key)
+		spec, ok := specByLabel[label]
+		if !ok {
+			spec = specByLabel[normalizeGroupLabel(label)]
+		}
+		emit(key, spec)
 	}
 	// 3) Rows not covered by any bucket.
 	extra := make([]string, 0)
@@ -146,13 +192,44 @@ func collectionGroups(query collectionQuery, fallbackRowIDs []string, specs []co
 }
 
 func collectionGroupSpecsByLabel(specs []collectionGroup) map[string]collectionGroup {
-	out := make(map[string]collectionGroup, len(specs))
+	out := make(map[string]collectionGroup, len(specs)*2)
 	for _, spec := range specs {
-		if spec.Label != "" {
-			out[spec.Label] = spec
+		if spec.Label == "" {
+			continue
+		}
+		out[spec.Label] = spec
+		if normalized := normalizeGroupLabel(spec.Label); normalized != spec.Label {
+			if _, ok := out[normalized]; !ok {
+				out[normalized] = spec
+			}
 		}
 	}
 	return out
+}
+
+// specResultKey matches a spec to a query-result bucket by constructing the
+// server-side key ("results:<type>:<label>", optionally query-escaped). This
+// covers labels whose keys do not decode cleanly back to the label text.
+func specResultKey(spec collectionGroup, idsByKey map[string][]string) (string, bool) {
+	if spec.ValueType == "" || spec.Label == "" {
+		return "", false
+	}
+	candidates := []string{
+		"results:" + spec.ValueType + ":" + spec.Label,
+	}
+	if escaped := url.QueryEscape(spec.Label); escaped != spec.Label {
+		candidates = append(candidates, "results:"+spec.ValueType+":"+escaped)
+	}
+	for _, candidate := range candidates {
+		if _, ok := idsByKey[candidate]; ok {
+			return candidate, true
+		}
+	}
+	return "", false
+}
+
+func normalizeGroupLabel(label string) string {
+	return strings.ToLower(strings.TrimSpace(label))
 }
 
 func collectionGroupsFromView(rm recordMap, coll collection, view collectionView, rowIDs []string) []collectionGroup {
@@ -246,9 +323,11 @@ func collectionGroupSpecs(value any, fallbackProperty string) []collectionGroup 
 		if label == "" {
 			label = "No value"
 		}
+		valueObject, _ := data["value"].(map[string]any)
 		groups = append(groups, collectionGroup{
 			Key:       property,
 			Label:     label,
+			ValueType: stringValue(valueObject["type"]),
 			Hidden:    collectionGroupHidden(data),
 			Collapsed: collectionGroupCollapsed(data),
 		})

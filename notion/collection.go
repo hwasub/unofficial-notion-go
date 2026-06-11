@@ -410,6 +410,20 @@ func renderCollectionCalendar(out *strings.Builder, rm recordMap, coll collectio
 		renderCollectionCards(out, rm, coll, rowIDs, properties, "calendar", input)
 		return
 	}
+	// Honor explicit view settings only; with no signal everything stays
+	// visible (mirrors how board views consult collectionBoardColumnHidden).
+	if hidden := collectionHiddenDateGroupKeys(view); len(hidden) > 0 {
+		visible := make([]collectionDateBucket, 0, len(buckets))
+		for _, bucket := range buckets {
+			if _, hide := hidden[bucket.Key]; !hide {
+				visible = append(visible, bucket)
+			}
+		}
+		buckets = visible
+	}
+	if collectionHideUnscheduled(view, "calendar") {
+		unscheduled = nil
+	}
 	out.WriteString(`<div class="notion-collection-calendar">`)
 	for _, bucket := range buckets {
 		out.WriteString(`<section class="notion-collection-calendar__day"><h3>`)
@@ -450,6 +464,10 @@ func renderCollectionTimeline(out *strings.Builder, rm recordMap, coll collectio
 	if len(entries) == 0 && len(unscheduled) == 0 {
 		renderCollectionCards(out, rm, coll, rowIDs, properties, "timeline", input)
 		return
+	}
+	// Hide the "No date" section only on an explicit view setting.
+	if collectionHideUnscheduled(view, "timeline") {
+		unscheduled = nil
 	}
 	if len(entries) == 0 {
 		renderCollectionTimelineList(out, rm, coll, entries, unscheduled, properties, input)

@@ -160,9 +160,25 @@ func collectionPropertyHTML(rm recordMap, row block, coll collection, property s
 		return renderEmailLink(plainText(value))
 	case "phone_number":
 		return renderPhoneLink(plainText(value))
+	case "unique_id":
+		return renderCollectionUniqueID(plainText(value), schema)
 	default:
 		return richTextWithResolver(value, notionMentionResolver(rm, input))
 	}
+}
+
+// renderCollectionUniqueID renders a unique ID value as Notion shows it:
+// PREFIX-N when the schema carries a prefix the value lacks, otherwise the
+// value as-is.
+func renderCollectionUniqueID(text string, schema collectionProperty) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	if schema.Prefix != "" && !strings.HasPrefix(text, schema.Prefix+"-") {
+		text = schema.Prefix + "-" + text
+	}
+	return `<span class="notion-property-unique-id">` + html.EscapeString(text) + `</span>`
 }
 
 func collectionPropertyValueEmpty(value any) bool {

@@ -117,6 +117,61 @@ func collectionTimelineEntryForRow(rowID string, value any) (collectionTimelineE
 	}, true
 }
 
+// collectionHideUnscheduled reports whether the view explicitly hides rows
+// without a date value. Only explicit signals hide content — a
+// *_hide_unscheduled format flag or a hidden uncategorized group spec; with no
+// signal the renderer keeps showing the "No date" section.
+func collectionHideUnscheduled(view collectionView, viewType string) bool {
+	for _, key := range []string{viewType + "_hide_unscheduled", "hide_unscheduled", "hide_no_date"} {
+		if boolValue(view.Format[key]) {
+			return true
+		}
+	}
+	items, ok := view.Format["collection_groups"].([]any)
+	if !ok {
+		return false
+	}
+	for _, item := range items {
+		data, ok := item.(map[string]any)
+		if !ok || !collectionGroupHidden(data) {
+			continue
+		}
+		// A hidden spec with no concrete value is the uncategorized group.
+		valueObject, isMap := data["value"].(map[string]any)
+		if data["value"] == nil || (isMap && valueObject["value"] == nil) {
+			return true
+		}
+	}
+	return false
+}
+
+// collectionHiddenDateGroupKeys returns the date keys (YYYY-MM-DD) of group
+// specs explicitly marked hidden in the view's collection_groups. Date group
+// specs carry their date under value.value.range.
+func collectionHiddenDateGroupKeys(view collectionView) map[string]struct{} {
+	items, ok := view.Format["collection_groups"].([]any)
+	if !ok {
+		return nil
+	}
+	hidden := map[string]struct{}{}
+	for _, item := range items {
+		data, ok := item.(map[string]any)
+		if !ok || !collectionGroupHidden(data) {
+			continue
+		}
+		valueObject, _ := data["value"].(map[string]any)
+		inner, _ := valueObject["value"].(map[string]any)
+		rng, _ := inner["range"].(map[string]any)
+		if key := dateKey(firstNonEmpty(stringValue(rng["start_date"]), stringValue(rng["end_date"]))); key != "" {
+			hidden[key] = struct{}{}
+		}
+	}
+	if len(hidden) == 0 {
+		return nil
+	}
+	return hidden
+}
+
 func collectionDateProperty(view collectionView, coll collection, properties []string, viewType string) string {
 	for _, key := range []string{
 		viewType + "_by",
