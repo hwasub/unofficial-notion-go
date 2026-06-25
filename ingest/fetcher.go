@@ -92,8 +92,9 @@ func FetchSnapshot(ctx context.Context, request FetchRequest, limits RequestLimi
 		// check is needed — repair guards every merge before performing it.
 		err = rejectRecordMapBlockLimit(recordMap, limits.MaxBlocks)
 	}
+	var repairReport collectionRepairReport
 	if err == nil {
-		err = repairCollectionQueries(pageCtx, client, recordMap, limits.MaxBlocks, log)
+		repairReport, err = repairCollectionQueries(pageCtx, client, recordMap, limits.MaxBlocks, log)
 	}
 	if err != nil {
 		mapped := mapNotionError(err)
@@ -122,6 +123,9 @@ func FetchSnapshot(ctx context.Context, request FetchRequest, limits RequestLimi
 			Message: "asset URL signing failed: " + err.Error(),
 		})
 	}
+	// Surface collection-repair diagnostics so a caller inspecting the Snapshot
+	// (not just the logger, which defaults to a no-op) can detect missing rows.
+	snapshotErrors = append(snapshotErrors, repairReport.Errors...)
 
 	blockCount := recordMapBlockCount(recordMap)
 	normalized := NormalizeRecordMap(recordMap)
@@ -157,14 +161,16 @@ func FetchSnapshot(ctx context.Context, request FetchRequest, limits RequestLimi
 
 	truncatedAssets := len(pageAssets) > len(assets)
 	truncatedBlocks := false
+	truncatedCollections := repairReport.BudgetExhausted || repairReport.PassesExhausted || repairReport.FailedViews > 0
 	log("notion_snapshot_completed", map[string]any{
-		"root_page_id":     rootPageID,
-		"assets":           len(assets),
-		"errors":           len(snapshotErrors),
-		"total_blocks":     blockCount,
-		"truncated_assets": truncatedAssets,
-		"truncated_blocks": truncatedBlocks,
-		"duration_ms":      int(now().Sub(startedAt) / time.Millisecond),
+		"root_page_id":          rootPageID,
+		"assets":                len(assets),
+		"errors":                len(snapshotErrors),
+		"total_blocks":          blockCount,
+		"truncated_assets":      truncatedAssets,
+		"truncated_blocks":      truncatedBlocks,
+		"truncated_collections": truncatedCollections,
+		"duration_ms":           int(now().Sub(startedAt) / time.Millisecond),
 	})
 
 	return &Snapshot{
@@ -180,8 +186,9 @@ func FetchSnapshot(ctx context.Context, request FetchRequest, limits RequestLimi
 		Assets: assets,
 		Errors: snapshotErrors,
 		Truncated: SnapshotFlags{
-			Assets: truncatedAssets,
-			Blocks: truncatedBlocks,
+			Assets:      truncatedAssets,
+			Blocks:      truncatedBlocks,
+			Collections: truncatedCollections,
 		},
 	}, nil
 }
@@ -227,6 +234,11 @@ func mapNotionError(cause error) *HTTPError {
 		default:
 			if upstream.StatusCode >= 500 {
 				return &HTTPError{StatusCode: 502, Code: ErrorCodeUpstreamError, Message: upstream.Message, RetryAfterMS: upstream.RetryAfterMS}
+			}
+			if upstream.StatusCode >= 400 {
+				// Preserve the upstream 4xx (400/405/409/422, ...) rather than
+				// masking a client-side problem as an internal 500.
+				return &HTTPError{StatusCode: upstream.StatusCode, Code: ErrorCodeUpstreamError, Message: upstream.Message, RetryAfterMS: upstream.RetryAfterMS}
 			}
 		}
 	}

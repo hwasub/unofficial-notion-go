@@ -179,8 +179,8 @@ func renderToggleHeading(out *strings.Builder, rm recordMap, blk block, input Re
 }
 
 func notionHeadingLevel(blockType string) int {
-	// Page titles already occupy h1 in the public template. Notion content
-	// headings therefore start at h2.
+	// RenderPage emits the page title as the body's single h1 (renderPageTitle).
+	// Notion content headings therefore start at h2.
 	switch blockType {
 	case "header":
 		return 2

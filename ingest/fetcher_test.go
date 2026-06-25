@@ -232,6 +232,12 @@ func TestMapNotionUpstreamErrors(t *testing.T) {
 			statusCode: http.StatusBadGateway,
 			code:       "notion_upstream_error",
 		},
+		{
+			name:       "upstream 400 preserved, not 500",
+			cause:      &notionapi.HTTPError{StatusCode: http.StatusBadRequest, Message: "bad request"},
+			statusCode: http.StatusBadRequest,
+			code:       "notion_upstream_error",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -378,7 +384,7 @@ func TestRepairProcessesCollectionViewsDiscoveredDuringRepair(t *testing.T) {
 			viewA: map[string]any{"value": map[string]any{"id": viewA, "type": "table", "format": map[string]any{}}},
 		},
 	}
-	if err := repairCollectionQueries(context.Background(), client, recordMap, 0, func(string, map[string]any) {}); err != nil {
+	if _, err := repairCollectionQueries(context.Background(), client, recordMap, 0, func(string, map[string]any) {}); err != nil {
 		t.Fatal(err)
 	}
 	want := []collectionCall{
@@ -409,7 +415,7 @@ func TestRepairPreservesExistingQueryWhenReducerResultsMalformed(t *testing.T) {
 			collectionID: map[string]any{viewID: existingQuery},
 		},
 	}
-	if err := repairCollectionQueries(context.Background(), client, recordMap, 0, func(string, map[string]any) {}); err != nil {
+	if _, err := repairCollectionQueries(context.Background(), client, recordMap, 0, func(string, map[string]any) {}); err != nil {
 		t.Fatal(err)
 	}
 	if len(client.collectionCalls) != 1 {
@@ -436,7 +442,7 @@ func TestRepairDeduplicatesViewIDs(t *testing.T) {
 			viewID: map[string]any{"value": map[string]any{"id": viewID, "type": "table", "format": map[string]any{}}},
 		},
 	}
-	if err := repairCollectionQueries(context.Background(), client, recordMap, 0, func(string, map[string]any) {}); err != nil {
+	if _, err := repairCollectionQueries(context.Background(), client, recordMap, 0, func(string, map[string]any) {}); err != nil {
 		t.Fatal(err)
 	}
 	if len(client.collectionCalls) != 1 {
@@ -464,7 +470,7 @@ func TestRepairStopsAtCallBudget(t *testing.T) {
 		"collection_view": collectionViews,
 	}
 	var budgetLogged bool
-	err := repairCollectionQueries(context.Background(), client, recordMap, 0, func(event string, _ map[string]any) {
+	report, err := repairCollectionQueries(context.Background(), client, recordMap, 0, func(event string, _ map[string]any) {
 		if event == "notion_collection_repair_budget_exhausted" {
 			budgetLogged = true
 		}
@@ -477,6 +483,33 @@ func TestRepairStopsAtCallBudget(t *testing.T) {
 	}
 	if !budgetLogged {
 		t.Fatal("expected notion_collection_repair_budget_exhausted log event")
+	}
+	if !report.BudgetExhausted || len(report.Errors) == 0 {
+		t.Fatalf("report = %+v, want BudgetExhausted with a surfaced error", report)
+	}
+}
+
+func TestRepairReportsFailedView(t *testing.T) {
+	collectionID, viewID := "col-1", "view-1"
+	client := &fakePageClient{
+		collectionDataFunc: func(string, string) (map[string]any, error) {
+			return nil, fmt.Errorf("boom")
+		},
+	}
+	recordMap := map[string]any{
+		"block": map[string]any{
+			"block-1": map[string]any{"value": map[string]any{"id": "block-1", "type": "collection_view", "collection_id": collectionID, "view_ids": []any{viewID}}},
+		},
+		"collection_view": map[string]any{
+			viewID: map[string]any{"value": map[string]any{"id": viewID, "type": "table", "format": map[string]any{}}},
+		},
+	}
+	report, err := repairCollectionQueries(context.Background(), client, recordMap, 0, func(string, map[string]any) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.FailedViews != 1 || len(report.Errors) != 1 {
+		t.Fatalf("report = %+v, want exactly one failed view surfaced as an error", report)
 	}
 }
 

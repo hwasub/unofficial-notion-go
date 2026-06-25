@@ -20,10 +20,22 @@ const (
 	maxCollectionRepairCalls  = 100
 )
 
-func repairCollectionQueries(ctx context.Context, client PageClient, recordMap map[string]any, maxBlocks int, log func(string, map[string]any)) error {
+// collectionRepairReport records why collection-query repair may have left the
+// record map incomplete, so FetchSnapshot can surface it on the Snapshot rather
+// than relying on the (default no-op) logger. A zero value means repair
+// completed cleanly.
+type collectionRepairReport struct {
+	FailedViews     int
+	BudgetExhausted bool
+	PassesExhausted bool
+	Errors          []SnapshotError
+}
+
+func repairCollectionQueries(ctx context.Context, client PageClient, recordMap map[string]any, maxBlocks int, log func(string, map[string]any)) (collectionRepairReport, error) {
+	var report collectionRepairReport
 	blocks := notionrecordmap.AsMap(recordMap["block"])
 	if blocks == nil {
-		return nil
+		return report, nil
 	}
 	collectionQueries := ensureRecordMap(recordMap, "collection_query")
 	// Each (collection, view) pair is decided at most once per call: a pair is
@@ -77,7 +89,12 @@ func repairCollectionQueries(ctx context.Context, client PageClient, recordMap m
 						"page_id": recordMapRootPageID(recordMap),
 						"calls":   calls,
 					})
-					return nil
+					report.BudgetExhausted = true
+					report.Errors = append(report.Errors, SnapshotError{
+						PageID:  recordMapRootPageID(recordMap),
+						Message: "collection query repair budget exhausted; some database views may be missing rows",
+					})
+					return report, nil
 				}
 				calls++
 				progressed = true
@@ -98,11 +115,16 @@ func repairCollectionQueries(ctx context.Context, client PageClient, recordMap m
 						"view_type":     notionrecordmap.StringValue(collectionView["type"]),
 						"message":       err.Error(),
 					})
+					report.FailedViews++
+					report.Errors = append(report.Errors, SnapshotError{
+						PageID:  recordMapRootPageID(recordMap),
+						Message: "collection query repair failed (collection " + collectionID + ", view " + viewID + "): " + err.Error(),
+					})
 					continue
 				}
 				sourceRecordMap := notionrecordmap.AsMap(collectionData["recordMap"])
 				if err := rejectMergedRecordMapBlockLimit(recordMap, sourceRecordMap, maxBlocks); err != nil {
-					return err
+					return report, err
 				}
 				mergeRawRecordMap(recordMap, sourceRecordMap)
 				reducerResults := notionrecordmap.AsMap(notionrecordmap.AsMap(collectionData["result"])["reducerResults"])
@@ -131,8 +153,17 @@ func repairCollectionQueries(ctx context.Context, client PageClient, recordMap m
 		if !progressed {
 			break
 		}
+		// Reaching the final pass while still progressing means the fixpoint was
+		// not found within the pass budget, so the result may be incomplete.
+		if pass == maxCollectionRepairPasses-1 {
+			report.PassesExhausted = true
+			report.Errors = append(report.Errors, SnapshotError{
+				PageID:  recordMapRootPageID(recordMap),
+				Message: "collection query repair did not converge within the pass limit; some database views may be incomplete",
+			})
+		}
 	}
-	return nil
+	return report, nil
 }
 
 func dedupeStrings(values []string) []string {

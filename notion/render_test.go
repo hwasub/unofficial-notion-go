@@ -1,6 +1,7 @@
 package notion
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -56,6 +57,94 @@ func TestRenderPageDropsUnsafePageFontClass(t *testing.T) {
 	assertContains(t, html, `<div class="notion-body"></div>`)
 	if strings.Contains(html, "onclick") || strings.Contains(html, "notion-body--font") {
 		t.Fatalf("unsafe page font leaked into rendered HTML: %s", html)
+	}
+}
+
+func TestRenderPageRendersRootTitleAsH1(t *testing.T) {
+	const (
+		rootID   = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+		headerID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+	)
+	recordMap := marshalRecordMap(t, map[string]any{
+		rootID: map[string]any{
+			"id":      rootID,
+			"type":    "page",
+			"content": []string{headerID},
+			"properties": map[string]any{
+				"title": [][]any{{`My <Title>`}},
+			},
+		},
+		headerID: map[string]any{
+			"id":   headerID,
+			"type": "header",
+			"properties": map[string]any{
+				"title": [][]any{{"Section"}},
+			},
+		},
+	})
+
+	html, err := RenderPage(RenderInput{RecordMap: recordMap, PageID: rootID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertContains(t, html, `<h1 class="notion-page-title">My &lt;Title&gt;</h1>`)
+	// The title is the body's single h1; content headings start at h2 and follow it.
+	title := strings.Index(html, `<h1 class="notion-page-title">`)
+	heading := strings.Index(html, "<h2")
+	if title < 0 || heading < 0 || title > heading {
+		t.Fatalf("expected page title h1 before the content h2: %s", html)
+	}
+}
+
+func TestRenderPageEnforcesInputLimits(t *testing.T) {
+	const (
+		rootID  = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+		childID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+	)
+	recordMap := marshalRecordMap(t, map[string]any{
+		rootID: map[string]any{
+			"id":      rootID,
+			"type":    "page",
+			"content": []string{childID},
+		},
+		childID: map[string]any{
+			"id":         childID,
+			"type":       "text",
+			"properties": map[string]any{"title": [][]any{{"hi"}}},
+		},
+	})
+
+	if _, err := RenderPage(RenderInput{RecordMap: recordMap, PageID: rootID, MaxRecordMapBytes: 1}); !errors.Is(err, ErrRecordMapTooLarge) {
+		t.Fatalf("MaxRecordMapBytes: err = %v, want ErrRecordMapTooLarge", err)
+	}
+	if _, err := RenderPage(RenderInput{RecordMap: recordMap, PageID: rootID, MaxBlocks: 1}); !errors.Is(err, ErrTooManyBlocks) {
+		t.Fatalf("MaxBlocks: err = %v, want ErrTooManyBlocks", err)
+	}
+	if _, err := RenderPage(RenderInput{RecordMap: recordMap, PageID: rootID, MaxOutputBytes: 1}); !errors.Is(err, ErrOutputTooLarge) {
+		t.Fatalf("MaxOutputBytes: err = %v, want ErrOutputTooLarge", err)
+	}
+	// Negative values disable each limit; the page renders normally.
+	if _, err := RenderPage(RenderInput{RecordMap: recordMap, PageID: rootID, MaxRecordMapBytes: -1, MaxBlocks: -1, MaxOutputBytes: -1}); err != nil {
+		t.Fatalf("disabled limits should render: %v", err)
+	}
+}
+
+func TestRenderPageUntitledRootEmitsNoTitleH1(t *testing.T) {
+	const rootID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	recordMap := marshalRecordMap(t, map[string]any{
+		rootID: map[string]any{
+			"id":   rootID,
+			"type": "page",
+		},
+	})
+
+	html, err := RenderPage(RenderInput{RecordMap: recordMap, PageID: rootID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertContains(t, html, `<div class="notion-body"></div>`)
+	if strings.Contains(html, "notion-page-title") {
+		t.Fatalf("untitled page should not emit a title h1: %s", html)
 	}
 }
 

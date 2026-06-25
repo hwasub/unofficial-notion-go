@@ -33,7 +33,7 @@ type CacheStats struct {
 // renderCacheVersion is mixed into disk cache keys so renderer, sanitizer,
 // template-contract, and local JS/CSS contract changes can invalidate cached
 // Notion HTML without rewriting database rows.
-const renderCacheVersion = "v1"
+const renderCacheVersion = "v2"
 
 var (
 	renderCacheMu sync.RWMutex
@@ -89,9 +89,13 @@ func RenderCacheStats() CacheStats {
 // RenderPageCached renders a Notion page, using the ephemeral disk cache when
 // enabled. locale is part of the key because RenderInput.T output is baked into
 // warning and UI strings.
+//
+// Renders with UnsafeRenderNotionSignedURLs bypass the cache entirely: their
+// output embeds short-lived, sensitive Notion-hosted signed URLs that must not
+// be written to ephemeral disk or served to a later request.
 func RenderPageCached(input RenderInput, locale string) (string, error) {
 	c := currentRenderCache()
-	if c == nil {
+	if c == nil || input.UnsafeRenderNotionSignedURLs {
 		return RenderPage(input)
 	}
 	key := RenderCacheKey(input, locale)
@@ -107,6 +111,11 @@ func RenderCacheKey(input RenderInput, locale string) string {
 	h := sha256.New()
 	writeHashPart(h, renderCacheVersion)
 	writeHashPart(h, locale)
+	writeHashPart(h, input.LocalizationVersion)
+	// Defensive: RenderPageCached already bypasses the cache for unsafe renders,
+	// but mixing the flag in keeps the key honest if a caller ever routes an
+	// unsafe render through Do directly.
+	writeHashPart(h, strconv.FormatBool(input.UnsafeRenderNotionSignedURLs))
 	writeHashPart(h, input.PageID)
 	writeHashPart(h, input.ResourceSlug)
 	writeHashPart(h, string(input.RecordMap))

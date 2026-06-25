@@ -511,6 +511,65 @@ func TestFetchRejectsOversizedArrayResponse(t *testing.T) {
 	}
 }
 
+func TestFetchTruncatesLargeErrorMessage(t *testing.T) {
+	body := strings.Repeat("x", maxErrorMessageBytes*2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	client := New(WithAPIBaseURL(server.URL))
+	_, err := client.Fetch(context.Background(), "loadPageChunk", map[string]any{}, nil, nil)
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("error = %#v, want *HTTPError", err)
+	}
+	if httpErr.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", httpErr.StatusCode)
+	}
+	if !strings.HasSuffix(httpErr.Message, "(truncated)") || len(httpErr.Message) > maxErrorMessageBytes+len("…(truncated)") {
+		t.Fatalf("error message not truncated as expected: %d bytes", len(httpErr.Message))
+	}
+}
+
+func TestFetchRejectsTrailingData(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true} trailing`))
+	}))
+	defer server.Close()
+
+	client := New(WithAPIBaseURL(server.URL))
+	_, err := client.Fetch(context.Background(), "loadPageChunk", map[string]any{}, nil, nil)
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("error = %#v, want *HTTPError", err)
+	}
+	if httpErr.Code != ErrorCodeMalformedResponse {
+		t.Fatalf("error code = %q", httpErr.Code)
+	}
+}
+
+// A trailing newline or whitespace after the JSON body is tolerated; only extra
+// non-whitespace data is rejected.
+func TestFetchAllowsTrailingWhitespace(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{\"ok\":true}\n\t "))
+	}))
+	defer server.Close()
+
+	client := New(WithAPIBaseURL(server.URL))
+	out, err := client.Fetch(context.Background(), "loadPageChunk", map[string]any{}, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out["ok"] != true {
+		t.Fatalf("out = %#v", out)
+	}
+}
+
 func TestFetchAllowsTypicalNesting(t *testing.T) {
 	body := `{"a":` + strings.Repeat(`{"b":`, 30) + "1" + strings.Repeat("}", 30) + `}`
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

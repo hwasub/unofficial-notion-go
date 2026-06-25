@@ -22,6 +22,20 @@ import (
 // malicious or malfunctioning upstream.
 const defaultMaxResponseBytes = 15 << 20
 
+// maxErrorMessageBytes bounds how much of an upstream error body is retained in
+// an HTTPError.Message, so a large non-JSON error response cannot bloat the
+// returned error (and any logs that include it).
+const maxErrorMessageBytes = 4 << 10
+
+// truncateErrorMessage bounds an upstream error message to maxErrorMessageBytes,
+// trimming any partial trailing UTF-8 rune introduced by the cut.
+func truncateErrorMessage(message string) string {
+	if len(message) <= maxErrorMessageBytes {
+		return message
+	}
+	return strings.ToValidUTF8(message[:maxErrorMessageBytes], "") + "…(truncated)"
+}
+
 // Structural limits Fetch enforces on decoded responses. Real Notion record
 // maps nest well under 30 levels and the largest arrays (blockIds) stay far
 // below the hard block caps, so these bounds only reject hostile or corrupt
@@ -666,7 +680,7 @@ func (c *Client) Fetch(ctx context.Context, endpoint string, body map[string]any
 		}
 		return nil, &HTTPError{
 			StatusCode:   resp.StatusCode,
-			Message:      message,
+			Message:      truncateErrorMessage(message),
 			RetryAfterMS: RetryAfterToMS(resp.Header.Get("Retry-After"), time.Now()),
 		}
 	}
@@ -689,6 +703,16 @@ func (c *Client) Fetch(ctx context.Context, endpoint string, body map[string]any
 	decoder.UseNumber()
 	if err := decoder.Decode(&out); err != nil {
 		return nil, err
+	}
+	// Reject responses with extra data after the first JSON value (e.g.
+	// `{"ok":true} trailing`). A well-formed body decodes exactly one value, so
+	// the next Decode must report EOF; anything else is a malformed response.
+	if err := decoder.Decode(new(json.RawMessage)); err != io.EOF {
+		return nil, &HTTPError{
+			StatusCode: http.StatusBadGateway,
+			Code:       ErrorCodeMalformedResponse,
+			Message:    "notion response contains trailing data after the JSON body",
+		}
 	}
 	if err := validateDecodedStructure(out); err != nil {
 		return nil, err

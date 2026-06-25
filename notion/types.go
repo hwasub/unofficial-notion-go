@@ -30,10 +30,11 @@ type SnapshotLimits struct {
 }
 
 // SnapshotFlags reports whether limits caused content to be dropped, indicating
-// the Snapshot may be missing assets or blocks.
+// the Snapshot may be missing assets, blocks, or collection-view rows.
 type SnapshotFlags struct {
-	Assets bool `json:"assets"`
-	Blocks bool `json:"blocks"`
+	Assets      bool `json:"assets"`
+	Blocks      bool `json:"blocks"`
+	Collections bool `json:"collections"`
 }
 
 // SnapshotError describes a non-fatal error that occurred while fetching a
