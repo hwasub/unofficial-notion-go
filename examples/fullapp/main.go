@@ -27,8 +27,11 @@ import (
 
 const (
 	maxAssetBytes = 64 << 20
-	katexCSSURL   = "https://cdn.jsdelivr.net/npm/katex@0.17.0/dist/katex.min.css"
-	katexJSURL    = "https://cdn.jsdelivr.net/npm/katex@0.17.0/dist/katex.min.js"
+	// defaultMaxTotalAssetBytes caps the total bytes one render downloads across
+	// all of its assets, bounding a single request's disk use.
+	defaultMaxTotalAssetBytes = 512 << 20
+	katexCSSURL               = "https://cdn.jsdelivr.net/npm/katex@0.17.0/dist/katex.min.css"
+	katexJSURL                = "https://cdn.jsdelivr.net/npm/katex@0.17.0/dist/katex.min.js"
 )
 
 //go:embed static
@@ -38,6 +41,7 @@ func main() {
 	addr := flag.String("addr", ":8080", "listen address")
 	assetDir := flag.String("asset-dir", "", "directory for downloaded Notion assets; default: a temporary directory")
 	maxAssets := flag.Int("max-assets", 200, "maximum Notion assets to discover and proxy per render")
+	maxTotalBytes := flag.Int64("max-total-bytes", defaultMaxTotalAssetBytes, "maximum total bytes of assets to download per render")
 	flag.Parse()
 
 	static, err := fs.Sub(embeddedStatic, "static")
@@ -45,7 +49,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	app, err := newApp(*assetDir, *maxAssets)
+	app, err := newApp(*assetDir, *maxAssets, *maxTotalBytes)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -68,14 +72,18 @@ func main() {
 }
 
 type app struct {
-	assetDir  string
-	client    *http.Client
-	maxAssets int
+	assetDir      string
+	client        *http.Client
+	maxAssets     int
+	maxTotalBytes int64
 }
 
-func newApp(assetDir string, maxAssets int) (*app, error) {
+func newApp(assetDir string, maxAssets int, maxTotalBytes int64) (*app, error) {
 	if maxAssets <= 0 {
 		maxAssets = 200
+	}
+	if maxTotalBytes <= 0 {
+		maxTotalBytes = defaultMaxTotalAssetBytes
 	}
 	if strings.TrimSpace(assetDir) == "" {
 		dir, err := os.MkdirTemp("", "unofficial-notion-go-assets-*")
@@ -88,9 +96,10 @@ func newApp(assetDir string, maxAssets int) (*app, error) {
 		return nil, err
 	}
 	return &app{
-		assetDir:  assetDir,
-		client:    &http.Client{Timeout: 30 * time.Second},
-		maxAssets: maxAssets,
+		assetDir:      assetDir,
+		client:        &http.Client{Timeout: 30 * time.Second},
+		maxAssets:     maxAssets,
+		maxTotalBytes: maxTotalBytes,
 	}, nil
 }
 
@@ -153,6 +162,11 @@ func (a *app) handleRender(w http.ResponseWriter, r *http.Request) {
 func (a *app) storeAssets(ctx context.Context, assets []ingest.AssetSnapshot) (map[string]string, int) {
 	urls := make(map[string]string, len(assets)*3)
 	var errors int
+	var used int64
+	budget := a.maxTotalBytes
+	if budget <= 0 {
+		budget = defaultMaxTotalAssetBytes
+	}
 	for _, asset := range assets {
 		signedURL := strings.TrimSpace(asset.SignedURL)
 		if signedURL == "" {
@@ -160,15 +174,21 @@ func (a *app) storeAssets(ctx context.Context, assets []ingest.AssetSnapshot) (m
 			log.Printf("asset %s: missing signed URL", asset.BlockID)
 			continue
 		}
+		if used >= budget {
+			errors++
+			log.Printf("asset %s: per-request asset budget of %d bytes reached, skipping the rest", asset.BlockID, budget)
+			break
+		}
 		data, err := a.fetchAsset(ctx, signedURL)
 		if err != nil {
 			errors++
 			log.Printf("asset %s: %v", asset.BlockID, err)
 			continue
 		}
+		used += int64(len(data))
 
 		key := hashKey(asset.BlockID, asset.Source)
-		if err := os.WriteFile(filepath.Join(a.assetDir, key), data, 0o644); err != nil {
+		if err := writeFileAtomic(filepath.Join(a.assetDir, key), data); err != nil {
 			errors++
 			log.Printf("asset %s: write: %v", asset.BlockID, err)
 			continue
@@ -183,6 +203,31 @@ func (a *app) storeAssets(ctx context.Context, assets []ingest.AssetSnapshot) (m
 		}
 	}
 	return urls, errors
+}
+
+// writeFileAtomic writes data to a temp file in the same directory and renames
+// it into place, so a request reading /assets/<key> never observes a partial
+// file while a concurrent render is still downloading it.
+func writeFileAtomic(path string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	return nil
 }
 
 func (a *app) fetchAsset(ctx context.Context, src string) ([]byte, error) {

@@ -51,3 +51,50 @@ func TestRenderCacheKeyIncludesLocale(t *testing.T) {
 		t.Fatal("RenderCacheKey did not include locale")
 	}
 }
+
+func TestRenderCacheKeyIncludesLocalizationVersion(t *testing.T) {
+	input := RenderInput{PageID: "page", RecordMap: []byte(`{"block":{}}`)}
+	withVersion := input
+	withVersion.LocalizationVersion = "fr-v2"
+	if RenderCacheKey(input, "en") == RenderCacheKey(withVersion, "en") {
+		t.Fatal("RenderCacheKey did not include LocalizationVersion")
+	}
+}
+
+func TestRenderCacheKeyIncludesUnsafeFlag(t *testing.T) {
+	input := RenderInput{PageID: "page", RecordMap: []byte(`{"block":{}}`)}
+	unsafe := input
+	unsafe.UnsafeRenderNotionSignedURLs = true
+	if RenderCacheKey(input, "en") == RenderCacheKey(unsafe, "en") {
+		t.Fatal("RenderCacheKey did not include UnsafeRenderNotionSignedURLs")
+	}
+}
+
+func TestRenderPageCachedBypassesCacheForUnsafeURLs(t *testing.T) {
+	initRenderCache(1<<20, t.TempDir())
+	t.Cleanup(func() { initRenderCache(0, "") })
+
+	const rootID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	input := RenderInput{
+		RecordMap: marshalRecordMap(t, map[string]any{
+			rootID: map[string]any{
+				"id":   rootID,
+				"type": "page",
+			},
+		}),
+		PageID:                       rootID,
+		UnsafeRenderNotionSignedURLs: true,
+	}
+
+	if _, err := RenderPageCached(input, "en"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RenderPageCached(input, "en"); err != nil {
+		t.Fatal(err)
+	}
+
+	stats := RenderCacheStats()
+	if stats.Entries != 0 || stats.Hits != 0 || stats.Misses != 0 {
+		t.Fatalf("stats = %+v, want no cache activity for unsafe renders", stats)
+	}
+}

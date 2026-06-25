@@ -35,6 +35,19 @@ import (
 	"github.com/hwasub/unofficial-notion-go/notion"
 )
 
+// defaultMaxAssetBytes caps a single proxied asset. Larger downloads are
+// rejected rather than silently truncated to a corrupt file.
+const defaultMaxAssetBytes = 64 << 20
+
+// Asset budgets bounding memory use. defaultMaxRequestAssetBytes caps the total
+// bytes one /render call will download; defaultMaxStoreBytes caps the whole
+// in-memory asset store across requests (this demo never evicts, so it refuses
+// new assets once full). Operators should tune these for real traffic.
+const (
+	defaultMaxRequestAssetBytes = 256 << 20
+	defaultMaxStoreBytes        = 512 << 20
+)
+
 func main() {
 	addr := flag.String("addr", ":8080", "listen address")
 	cssPath := flag.String("css", "", "stylesheet served at /notion.css (default: embedded notion.StyleCSS(); \"none\" to skip)")
@@ -42,10 +55,13 @@ func main() {
 	flag.Parse()
 
 	srv := &server{
-		assets:  map[string][]byte{},
-		client:  &http.Client{Timeout: 30 * time.Second},
-		cssPath: *cssPath,
-		jsPath:  *jsPath,
+		assets:               map[string][]byte{},
+		client:               &http.Client{Timeout: 30 * time.Second},
+		cssPath:              *cssPath,
+		jsPath:               *jsPath,
+		maxAssetBytes:        defaultMaxAssetBytes,
+		maxRequestAssetBytes: defaultMaxRequestAssetBytes,
+		maxStoreBytes:        defaultMaxStoreBytes,
 	}
 
 	mux := http.NewServeMux()
@@ -64,11 +80,15 @@ func main() {
 }
 
 type server struct {
-	mu      sync.Mutex
-	assets  map[string][]byte
-	client  *http.Client
-	cssPath string
-	jsPath  string
+	mu                   sync.Mutex
+	assets               map[string][]byte
+	usedBytes            int64 // total bytes currently held in assets
+	client               *http.Client
+	cssPath              string
+	jsPath               string
+	maxAssetBytes        int64 // per-asset download cap; <=0 uses defaultMaxAssetBytes
+	maxRequestAssetBytes int64 // per-/render total download cap; <=0 uses default
+	maxStoreBytes        int64 // whole in-memory store cap; <=0 uses default
 }
 
 func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -128,19 +148,30 @@ func (s *server) handleRender(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) proxyAssets(ctx context.Context, assets []ingest.AssetSnapshot) map[string]string {
 	urls := make(map[string]string, len(assets)*2)
+	budget := s.maxRequestAssetBytes
+	if budget <= 0 {
+		budget = defaultMaxRequestAssetBytes
+	}
+	var used int64
 	for _, asset := range assets {
 		if strings.TrimSpace(asset.SignedURL) == "" {
 			continue
+		}
+		if used >= budget {
+			log.Printf("asset %s: per-request asset budget of %d bytes reached, skipping the rest", asset.BlockID, budget)
+			break
 		}
 		data, err := s.fetch(ctx, asset.SignedURL)
 		if err != nil {
 			log.Printf("asset %s: %v", asset.BlockID, err)
 			continue
 		}
+		used += int64(len(data))
 		key := hashKey(asset.BlockID, asset.Source)
-		s.mu.Lock()
-		s.assets[key] = data
-		s.mu.Unlock()
+		if !s.store(key, data) {
+			log.Printf("asset %s: in-memory asset store is full, skipping", asset.BlockID)
+			continue
+		}
 		public := "/assets/" + key
 		urls[asset.BlockID] = public
 		if asset.Source != "" {
@@ -148,6 +179,27 @@ func (s *server) proxyAssets(ctx context.Context, assets []ingest.AssetSnapshot)
 		}
 	}
 	return urls
+}
+
+// store records an asset unless doing so would exceed the in-memory store cap.
+// It returns whether the asset is available afterward (already present or newly
+// stored). The demo never evicts, so it refuses new assets once full.
+func (s *server) store(key string, data []byte) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.assets[key]; ok {
+		return true
+	}
+	limit := s.maxStoreBytes
+	if limit <= 0 {
+		limit = defaultMaxStoreBytes
+	}
+	if s.usedBytes+int64(len(data)) > limit {
+		return false
+	}
+	s.assets[key] = data
+	s.usedBytes += int64(len(data))
+	return true
 }
 
 func (s *server) fetch(ctx context.Context, src string) ([]byte, error) {
@@ -163,7 +215,20 @@ func (s *server) fetch(ctx context.Context, src string) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("status %s", resp.Status)
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	limit := s.maxAssetBytes
+	if limit <= 0 {
+		limit = defaultMaxAssetBytes
+	}
+	// Read one extra byte so an asset exactly at the limit is accepted but an
+	// oversized one is rejected instead of being silently truncated.
+	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("asset exceeds %d bytes", limit)
+	}
+	return data, nil
 }
 
 func (s *server) handleAsset(w http.ResponseWriter, r *http.Request) {

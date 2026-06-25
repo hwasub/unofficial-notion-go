@@ -93,6 +93,19 @@ func renderPageIconHero(out *strings.Builder, rm recordMap, root block, input Re
 	out.WriteString(`</div>`)
 }
 
+// renderPageTitle emits the page's own <h1> from the root block's title. It is
+// the single h1 of the rendered body; Notion content headings start at h2 (see
+// notionHeadingLevel). An untitled page emits nothing, preserving the bare body.
+func renderPageTitle(out *strings.Builder, rm recordMap, root block, input RenderInput) {
+	title := richTextWithResolver(root.Properties["title"], notionMentionResolver(rm, input))
+	if strings.TrimSpace(title) == "" {
+		return
+	}
+	out.WriteString(`<h1 class="notion-page-title">`)
+	out.WriteString(title)
+	out.WriteString(`</h1>`)
+}
+
 func renderPageIcon(out *strings.Builder, rm recordMap, blk block, input RenderInput) {
 	icon, _ := blk.Format["page_icon"].(string)
 	if icon == "" {

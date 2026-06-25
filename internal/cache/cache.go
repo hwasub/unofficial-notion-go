@@ -129,7 +129,11 @@ func (c *Cache[V]) Do(key string, load func() (V, error)) (V, error) {
 		var zero V
 		return zero, err
 	}
-	return res.(V), nil
+	// res is a nil interface when V is itself an interface type and the loader
+	// returned (nil, nil). A comma-ok assertion yields the zero value instead of
+	// panicking on res.(V) (which flight would then re-panic to every waiter).
+	v, _ := res.(V)
+	return v, nil
 }
 
 func (c *Cache[V]) evictLocked() {

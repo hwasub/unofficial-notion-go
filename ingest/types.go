@@ -60,10 +60,13 @@ type SnapshotLimits struct {
 
 // SnapshotFlags reports whether output was truncated because a limit dropped
 // content. FetchSnapshot drops assets beyond MaxAssets, but it fails rather than
-// returning a partial block set when MaxBlocks is exceeded.
+// returning a partial block set when MaxBlocks is exceeded. Collections is set
+// when collection-query repair gave up (call or pass budget exhausted, or a
+// view failed to repair), so some database views may be missing rows.
 type SnapshotFlags struct {
-	Assets bool `json:"assets"`
-	Blocks bool `json:"blocks"`
+	Assets      bool `json:"assets"`
+	Blocks      bool `json:"blocks"`
+	Collections bool `json:"collections"`
 }
 
 // SnapshotError describes a non-fatal problem encountered while building a

@@ -2,9 +2,29 @@ package notion
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"strings"
+)
+
+// Default RenderPage input/output limits. A RenderInput field of 0 selects the
+// matching default; a negative field disables that limit.
+const (
+	// DefaultMaxRecordMapBytes bounds the raw record map RenderPage will parse.
+	DefaultMaxRecordMapBytes = 32 << 20
+	// DefaultMaxBlocks bounds the number of blocks in one record map.
+	DefaultMaxBlocks = 50_000
+	// DefaultMaxOutputBytes bounds the rendered HTML produced for one page.
+	DefaultMaxOutputBytes = 16 << 20
+)
+
+// Limit errors returned by RenderPage when a RenderInput exceeds its bound.
+// Callers can branch with errors.Is.
+var (
+	ErrRecordMapTooLarge = errors.New("notion: record map exceeds size limit")
+	ErrTooManyBlocks     = errors.New("notion: record map exceeds block limit")
+	ErrOutputTooLarge    = errors.New("notion: rendered output exceeds size limit")
 )
 
 // RenderInput is the complete set of inputs RenderPage needs to produce HTML for
@@ -20,8 +40,22 @@ type RenderInput struct {
 	// from the record map/source when AssetURLs has no caller-controlled URL.
 	// This is only for local debugging and must not be enabled in production.
 	UnsafeRenderNotionSignedURLs bool
-	ResourceSlug                 string    // first URL path segment for emitted page links (e.g. "/<slug>/<page>"); empty disables those links
-	T                            Localizer // optional localizer for UI strings; nil uses English fallbacks
+	ResourceSlug                 string // first URL path segment for emitted page links (e.g. "/<slug>/<page>"); empty disables those links
+	// LocalizationVersion is mixed into the render cache key so two callers whose
+	// Localizers produce different UI strings for the same locale do not collide.
+	// Bump it when the Localizer's string table changes; empty matches the prior behavior.
+	LocalizationVersion string
+	T                   Localizer // optional localizer for UI strings; nil uses English fallbacks
+
+	// MaxRecordMapBytes caps len(RecordMap) before parsing. 0 uses
+	// DefaultMaxRecordMapBytes; a negative value disables the check.
+	MaxRecordMapBytes int
+	// MaxBlocks caps the number of blocks after parsing. 0 uses DefaultMaxBlocks;
+	// a negative value disables the check.
+	MaxBlocks int
+	// MaxOutputBytes caps the rendered HTML size. 0 uses DefaultMaxOutputBytes; a
+	// negative value disables the cap.
+	MaxOutputBytes int
 }
 
 // Localizer returns localized UI text for a key, falling back to a built-in
@@ -323,10 +357,30 @@ type mentionResolver func(kind string, value any, rawText string) string
 // escaped and only URLs that pass the package's safety checks are emitted. It
 // returns an error if the record map cannot be parsed or the root page is not
 // present.
+// resolveLimit maps a configured RenderInput limit to an effective ceiling: 0
+// selects def, a negative value disables the limit (returns 0, meaning "no
+// limit"), and any positive value is used as-is.
+func resolveLimit(configured, def int) int {
+	switch {
+	case configured == 0:
+		return def
+	case configured < 0:
+		return 0
+	default:
+		return configured
+	}
+}
+
 func RenderPage(input RenderInput) (string, error) {
+	if limit := resolveLimit(input.MaxRecordMapBytes, DefaultMaxRecordMapBytes); limit > 0 && len(input.RecordMap) > limit {
+		return "", fmt.Errorf("%w: %d > %d bytes", ErrRecordMapTooLarge, len(input.RecordMap), limit)
+	}
 	var rm recordMap
 	if err := json.Unmarshal(input.RecordMap, &rm); err != nil {
 		return "", err
+	}
+	if limit := resolveLimit(input.MaxBlocks, DefaultMaxBlocks); limit > 0 && len(rm.Block) > limit {
+		return "", fmt.Errorf("%w: %d > %d blocks", ErrTooManyBlocks, len(rm.Block), limit)
 	}
 	rm.budget = &renderBudget{remaining: blockRenderBudget(len(rm.Block))}
 	rootID := NormalizeID(input.PageID)
@@ -341,9 +395,13 @@ func RenderPage(input RenderInput) (string, error) {
 	b.WriteString(`">`)
 	renderPageCover(&b, rm, root, input)
 	renderPageIconHero(&b, rm, root, input)
+	renderPageTitle(&b, rm, root, input)
 	renderWarnings(&b, input.Warnings, input)
 	renderBlockList(&b, rm, root.Content, input, 0)
 	b.WriteString(`</div>`)
+	if limit := resolveLimit(input.MaxOutputBytes, DefaultMaxOutputBytes); limit > 0 && b.Len() > limit {
+		return "", fmt.Errorf("%w: %d > %d bytes", ErrOutputTooLarge, b.Len(), limit)
+	}
 	return b.String(), nil
 }
 
