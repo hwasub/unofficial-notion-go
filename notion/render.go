@@ -76,7 +76,8 @@ type RenderInput struct {
 //	               notion.no_date, notion.other, notion.result
 //	Warnings:      notion.render_warning_title, notion.warn_fetch,
 //	               notion.warn_asset_download, notion.warn_assets_truncated,
-//	               notion.warn_blocks_truncated
+//	               notion.warn_blocks_truncated,
+//	               notion.warn_collections_truncated
 //
 // New keys may be added in minor releases. Implementations must return the
 // supplied fallback for keys they do not recognize.
@@ -427,11 +428,12 @@ func normalizeRenderWarnings(warnings []RenderWarning) []RenderWarning {
 		RenderWarningAssetDownloadErrors,
 		RenderWarningAssetsTruncated,
 		RenderWarningBlocksTruncated,
+		RenderWarningCollectionsTruncated,
 	}
 	totals := map[string]int{}
 	for _, warning := range warnings {
 		switch warning.Kind {
-		case RenderWarningFetchErrors, RenderWarningAssetDownloadErrors, RenderWarningAssetsTruncated, RenderWarningBlocksTruncated:
+		case RenderWarningFetchErrors, RenderWarningAssetDownloadErrors, RenderWarningAssetsTruncated, RenderWarningBlocksTruncated, RenderWarningCollectionsTruncated:
 			count := warning.Count
 			if count <= 0 {
 				count = 1
@@ -458,6 +460,8 @@ func renderWarningText(warning RenderWarning, loc RenderInput) string {
 		return loc.t("notion.warn_assets_truncated", "Asset limit reached; some media may be unavailable.")
 	case RenderWarningBlocksTruncated:
 		return loc.t("notion.warn_blocks_truncated", "Block limit reached; some page content may be missing.")
+	case RenderWarningCollectionsTruncated:
+		return loc.t("notion.warn_collections_truncated", "Collection data is incomplete; some database content may be missing.")
 	default:
 		return "Notion render warning"
 	}

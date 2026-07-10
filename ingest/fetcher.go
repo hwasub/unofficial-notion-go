@@ -82,7 +82,7 @@ func FetchSnapshot(ctx context.Context, request FetchRequest, limits RequestLimi
 		FetchRelationPages:      false,
 		SignFileURLs:            false,
 		ChunkLimit:              100,
-		CollectionReducerLimit:  999,
+		CollectionReducerLimit:  collectionReducerLimit,
 		ThrowOnCollectionErrors: false,
 		MaxBlocks:               limits.MaxBlocks,
 	})
@@ -95,6 +95,9 @@ func FetchSnapshot(ctx context.Context, request FetchRequest, limits RequestLimi
 	var repairReport collectionRepairReport
 	if err == nil {
 		repairReport, err = repairCollectionQueries(pageCtx, client, recordMap, limits.MaxBlocks, log)
+		if err == nil {
+			repairReport.observeReducerLimit(recordMap, rootPageID, collectionReducerLimit, log)
+		}
 	}
 	if err != nil {
 		mapped := mapNotionError(err)
@@ -161,7 +164,7 @@ func FetchSnapshot(ctx context.Context, request FetchRequest, limits RequestLimi
 
 	truncatedAssets := len(pageAssets) > len(assets)
 	truncatedBlocks := false
-	truncatedCollections := repairReport.BudgetExhausted || repairReport.PassesExhausted || repairReport.FailedViews > 0
+	truncatedCollections := repairReport.BudgetExhausted || repairReport.PassesExhausted || repairReport.LimitReached || repairReport.FailedViews > 0
 	log("notion_snapshot_completed", map[string]any{
 		"root_page_id":          rootPageID,
 		"assets":                len(assets),
@@ -174,7 +177,7 @@ func FetchSnapshot(ctx context.Context, request FetchRequest, limits RequestLimi
 	})
 
 	return &Snapshot{
-		SchemaVersion: 1,
+		SchemaVersion: SnapshotSchemaVersion,
 		FetchedAt:     fetchedAt,
 		RootPageID:    rootPageID,
 		SourceURL:     request.URL,
@@ -216,7 +219,7 @@ func mapNotionError(cause error) *HTTPError {
 				Message:      upstream.Message,
 				RetryAfterMS: upstream.RetryAfterMS,
 			}
-		case notionapi.ErrorCodeUnexpectedContentType, notionapi.ErrorCodeMalformedResponse:
+		case notionapi.ErrorCodeUnexpectedContentType, notionapi.ErrorCodeMalformedResponse, notionapi.ErrorCodeMissingBlocks:
 			return &HTTPError{
 				StatusCode:   http.StatusBadGateway,
 				Code:         upstream.Code,

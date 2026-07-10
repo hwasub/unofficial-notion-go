@@ -9,6 +9,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -227,7 +228,7 @@ func (c *Client) GetPage(ctx context.Context, pageID string, opts PageOptions) (
 	}
 	recordMap := notionrecordmap.AsMap(page["recordMap"])
 	if notionrecordmap.AsMap(recordMap["block"]) == nil {
-		return nil, fmt.Errorf("notion page not found: %q", notionid.UUIDToID(pageID))
+		return nil, pageNotFoundError(rootPageID)
 	}
 	ensureMap(recordMap, "collection")
 	ensureMap(recordMap, "collection_view")
@@ -238,7 +239,11 @@ func (c *Client) GetPage(ctx context.Context, pageID string, opts PageOptions) (
 		return nil, err
 	}
 
-	contentBlockIDs := notionrecordmap.GetPageContentBlockIDs(recordMap, rootPageID)
+	contentRootID := recordMapBlockKey(notionrecordmap.AsMap(recordMap["block"]), rootPageID)
+	if contentRootID == "" {
+		contentRootID = rootPageID
+	}
+	contentBlockIDs := notionrecordmap.GetPageContentBlockIDs(recordMap, contentRootID)
 	if opts.FetchMissingBlocks {
 		for {
 			if err := ctx.Err(); err != nil {
@@ -247,7 +252,7 @@ func (c *Client) GetPage(ctx context.Context, pageID string, opts PageOptions) (
 			blocks := notionrecordmap.AsMap(recordMap["block"])
 			pending := []string{}
 			for _, id := range contentBlockIDs {
-				if _, ok := blocks[id]; !ok {
+				if !recordMapHasBlockID(blocks, id) {
 					pending = append(pending, id)
 				}
 			}
@@ -257,26 +262,42 @@ func (c *Client) GetPage(ctx context.Context, pageID string, opts PageOptions) (
 			if opts.MaxBlocks > 0 && len(blocks)+len(pending) > opts.MaxBlocks {
 				return nil, maxBlocksExceededError(opts.MaxBlocks)
 			}
-			chunk, err := c.GetBlocks(ctx, pending)
-			if err != nil {
-				return nil, err
-			}
 			before := len(blocks)
-			newBlocks := notionrecordmap.AsMap(notionrecordmap.AsMap(chunk["recordMap"])["block"])
-			if err := enforceMapMergeMaxBlocks(blocks, newBlocks, opts.MaxBlocks); err != nil {
-				return nil, err
+			for start := 0; start < len(pending); start += opts.ChunkLimit {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+				end := min(start+opts.ChunkLimit, len(pending))
+				chunk, err := c.GetBlocks(ctx, pending[start:end])
+				if err != nil {
+					return nil, err
+				}
+				newBlocks := notionrecordmap.AsMap(notionrecordmap.AsMap(chunk["recordMap"])["block"])
+				if err := enforceMapMergeMaxBlocks(blocks, newBlocks, opts.MaxBlocks); err != nil {
+					return nil, err
+				}
+				mergeMap(blocks, newBlocks)
 			}
-			mergeMap(blocks, newBlocks)
 			if len(blocks) == before {
 				// The upstream returned none of the pending blocks (not found,
-				// access revoked, or keyed differently). Stop rather than
-				// re-requesting the same set forever.
-				break
+				// access revoked, or keyed differently). Returning a typed error
+				// keeps callers from mistaking a partial record map for a complete
+				// page snapshot.
+				if !recordMapHasBlockID(blocks, rootPageID) {
+					return nil, pageNotFoundError(rootPageID)
+				}
+				return nil, missingBlocksError(len(pending))
 			}
 			// New blocks may reference further content; the traversal is only
 			// recomputed here, after a merge actually changed the block table.
-			contentBlockIDs = notionrecordmap.GetPageContentBlockIDs(recordMap, rootPageID)
+			if rootKey := recordMapBlockKey(blocks, rootPageID); rootKey != "" {
+				contentRootID = rootKey
+			}
+			contentBlockIDs = notionrecordmap.GetPageContentBlockIDs(recordMap, contentRootID)
 		}
+	}
+	if !recordMapHasBlockID(notionrecordmap.AsMap(recordMap["block"]), rootPageID) {
+		return nil, pageNotFoundError(rootPageID)
 	}
 
 	if opts.FetchCollections {
@@ -551,7 +572,9 @@ func (c *Client) GetSignedFileURLs(ctx context.Context, urls []SignedURLRequest)
 }
 
 // AddSignedURLs resolves signed download URLs for any file-bearing blocks in
-// recordMap and stores them under recordMap["signed_urls"], keyed by block ID.
+// recordMap and stores them under recordMap["signed_urls"]. Primary media are
+// keyed by block ID, role assets by block ID plus a role suffix, and rich-text
+// file assets by their source URL.
 //
 // Contract: the method is honest about failure. If no blocks reference signable
 // files it resets recordMap["signed_urls"] to an empty map and returns nil. If
@@ -563,54 +586,84 @@ func (c *Client) GetSignedFileURLs(ctx context.Context, urls []SignedURLRequest)
 func (c *Client) AddSignedURLs(ctx context.Context, recordMap map[string]any, contentBlockIDs []string) error {
 	c = c.normalized()
 	recordMap["signed_urls"] = map[string]any{}
-	if len(contentBlockIDs) == 0 {
-		contentBlockIDs = notionrecordmap.GetPageContentBlockIDs(recordMap, "")
-	}
 	blocks := notionrecordmap.AsMap(recordMap["block"])
-	allFileInstances := []SignedURLRequest{}
+	if len(contentBlockIDs) == 0 {
+		contentBlockIDs = notionrecordmap.MapKeys(blocks)
+	}
+	contentBlockIDs = append([]string(nil), contentBlockIDs...)
+	sort.Strings(contentBlockIDs)
+	type signTarget struct {
+		Request SignedURLRequest
+		Keys    []string
+	}
+	targets := []signTarget{}
+	targetByRequest := map[string]int{}
+	addTarget := func(blockID, source string, keys ...string) {
+		if blockID == "" || !signableFileSource(source) {
+			return
+		}
+		requestKey := blockID + "\x00" + source
+		index, exists := targetByRequest[requestKey]
+		if !exists {
+			index = len(targets)
+			targetByRequest[requestKey] = index
+			targets = append(targets, signTarget{Request: SignedURLRequest{
+				PermissionRecord: PermissionRecord{Table: "block", ID: blockID},
+				URL:              source,
+			}})
+		}
+		targets[index].Keys = appendUniqueStrings(targets[index].Keys, append([]string{source}, keys...)...)
+	}
 	for _, blockID := range contentBlockIDs {
-		block := notionrecordmap.GetBlockValue(blocks[blockID])
+		blockKey := recordMapBlockKey(blocks, blockID)
+		block := notionrecordmap.GetBlockValue(blocks[blockKey])
 		if block == nil {
 			continue
 		}
 		blockType := notionrecordmap.StringValue(block["type"])
-		if !signedBlockType(blockType, block) {
-			continue
-		}
-		source := ""
+		recordID := notionrecordmap.StringValue(block["id"])
+		format := notionrecordmap.AsMap(block["format"])
 		if blockType == "page" {
-			source = notionrecordmap.StringValue(notionrecordmap.AsMap(block["format"])["page_cover"])
-		} else {
-			source = firstPropertyText(notionrecordmap.AsMap(block["properties"])["source"])
+			addTarget(recordID, notionrecordmap.StringValue(format["page_cover"]), recordID, recordID+":cover")
+			addTarget(recordID, notionrecordmap.StringValue(format["page_icon"]), recordID+":icon")
+		} else if signedBlockType(blockType, block) {
+			addTarget(recordID, firstPropertyText(notionrecordmap.AsMap(block["properties"])["source"]), recordID)
 		}
-		if source == "" {
-			continue
+		switch blockType {
+		case "callout":
+			addTarget(recordID, notionrecordmap.StringValue(format["page_icon"]), recordID+":icon")
+		case "bookmark", "embed", "external_object_instance":
+			addTarget(recordID, notionrecordmap.StringValue(format["bookmark_icon"]), recordID+":icon")
+			addTarget(recordID, notionrecordmap.StringValue(format["bookmark_cover"]), recordID+":cover")
 		}
-		if strings.Contains(source, "secure.notion-static.com") ||
-			strings.Contains(source, "prod-files-secure") ||
-			strings.Contains(source, "attachment:") {
-			allFileInstances = append(allFileInstances, SignedURLRequest{
-				PermissionRecord: PermissionRecord{Table: "block", ID: notionrecordmap.StringValue(block["id"])},
-				URL:              source,
-			})
+		for _, source := range richTextFileSources(notionrecordmap.AsMap(block["properties"])) {
+			addTarget(recordID, source)
 		}
 	}
-	if len(allFileInstances) == 0 {
+	if len(targets) == 0 {
 		return nil
 	}
-	response, err := c.GetSignedFileURLs(ctx, allFileInstances)
+	requests := make([]SignedURLRequest, len(targets))
+	for i, target := range targets {
+		requests[i] = target.Request
+	}
+	response, err := c.GetSignedFileURLs(ctx, requests)
 	if err != nil {
 		return fmt.Errorf("get signed file urls: %w", err)
 	}
-	if len(response.SignedURLs) != len(allFileInstances) {
-		return fmt.Errorf("notion signed url count mismatch: got %d, want %d", len(response.SignedURLs), len(allFileInstances))
+	if len(response.SignedURLs) != len(targets) {
+		return fmt.Errorf("notion signed url count mismatch: got %d, want %d", len(response.SignedURLs), len(targets))
 	}
 	signed := notionrecordmap.AsMap(recordMap["signed_urls"])
-	for i, file := range allFileInstances {
-		if response.SignedURLs[i] == "" || file.PermissionRecord.ID == "" {
+	for i, target := range targets {
+		if response.SignedURLs[i] == "" {
 			continue
 		}
-		signed[file.PermissionRecord.ID] = response.SignedURLs[i]
+		for _, key := range target.Keys {
+			if key != "" {
+				signed[key] = response.SignedURLs[i]
+			}
+		}
 	}
 	return nil
 }
@@ -919,6 +972,51 @@ func mergeRecordMap(target map[string]any, source map[string]any) {
 	}
 }
 
+func recordMapBlockKey(blocks map[string]any, id string) string {
+	if len(blocks) == 0 || id == "" {
+		return ""
+	}
+	normalized := notionid.ParsePageIDForAPI(id, true)
+	if normalized == "" {
+		normalized = id
+	}
+	for _, candidate := range []string{id, normalized, notionid.UUIDToID(normalized)} {
+		if notionrecordmap.GetBlockValue(blocks[candidate]) != nil {
+			return candidate
+		}
+	}
+	for key, value := range blocks {
+		block := notionrecordmap.GetBlockValue(value)
+		if block == nil {
+			continue
+		}
+		if notionid.ParsePageIDForAPI(notionrecordmap.StringValue(block["id"]), true) == normalized {
+			return key
+		}
+	}
+	return ""
+}
+
+func recordMapHasBlockID(blocks map[string]any, id string) bool {
+	return recordMapBlockKey(blocks, id) != ""
+}
+
+func pageNotFoundError(pageID string) *HTTPError {
+	return &HTTPError{
+		StatusCode: http.StatusNotFound,
+		Code:       ErrorCodePageNotFound,
+		Message:    fmt.Sprintf("notion page not found: %q", notionid.UUIDToID(pageID)),
+	}
+}
+
+func missingBlocksError(count int) *HTTPError {
+	return &HTTPError{
+		StatusCode: http.StatusBadGateway,
+		Code:       ErrorCodeMissingBlocks,
+		Message:    fmt.Sprintf("notion response omitted %d referenced block(s)", count),
+	}
+}
+
 func enforceMaxBlocks(recordMap map[string]any, maxBlocks int) error {
 	if maxBlocks <= 0 {
 		return nil
@@ -993,15 +1091,99 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func signedBlockType(blockType string, block map[string]any) bool {
+func signedBlockType(blockType string, _ map[string]any) bool {
 	switch blockType {
-	case "pdf", "audio", "video", "file", "page":
+	case "pdf", "audio", "video", "file", "page", "image":
 		return true
-	case "image":
-		return len(notionrecordmap.AsSlice(block["file_ids"])) > 0
 	default:
 		return false
 	}
+}
+
+func signableFileSource(source string) bool {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return false
+	}
+	if strings.HasPrefix(source, "attachment:") {
+		return true
+	}
+	parsed, err := url.Parse(source)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	switch host {
+	case "secure.notion-static.com", "prod-files-secure.s3.us-west-2.amazonaws.com", "prod-files-secure":
+		return true
+	case "s3.us-west-2.amazonaws.com", "s3-us-west-2.amazonaws.com":
+		return strings.Contains(strings.ToLower(parsed.EscapedPath()), "/secure.notion-static.com/")
+	default:
+		return false
+	}
+}
+
+func richTextFileSources(properties map[string]any) []string {
+	keys := make([]string, 0, len(properties))
+	for key := range properties {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	out := []string{}
+	for _, key := range keys {
+		for _, rawPart := range notionrecordmap.AsSlice(properties[key]) {
+			part := notionrecordmap.AsSlice(rawPart)
+			if len(part) == 0 {
+				continue
+			}
+			if source := notionrecordmap.StringValue(part[0]); signableFileSource(source) {
+				out = appendUniqueStrings(out, source)
+			}
+			if len(part) < 2 {
+				continue
+			}
+			for _, rawDecoration := range notionrecordmap.AsSlice(part[1]) {
+				decoration := notionrecordmap.AsSlice(rawDecoration)
+				if len(decoration) < 2 {
+					continue
+				}
+				switch notionrecordmap.StringValue(decoration[0]) {
+				case "a":
+					if source := notionrecordmap.StringValue(decoration[1]); signableFileSource(source) {
+						out = appendUniqueStrings(out, source)
+					}
+				case "lm":
+					metadata := notionrecordmap.AsMap(decoration[1])
+					for _, field := range []string{"icon_url", "thumbnail_url"} {
+						if source := notionrecordmap.StringValue(metadata[field]); signableFileSource(source) {
+							out = appendUniqueStrings(out, source)
+						}
+					}
+				}
+			}
+		}
+	}
+	return out
+}
+
+func appendUniqueStrings(target []string, values ...string) []string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		found := false
+		for _, existing := range target {
+			if existing == value {
+				found = true
+				break
+			}
+		}
+		if !found {
+			target = append(target, value)
+		}
+	}
+	return target
 }
 
 func firstPropertyText(value any) string {

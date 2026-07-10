@@ -234,8 +234,16 @@ html, err := notion.RenderPage(notion.RenderInput{
 })
 ```
 
-When rendering a `notion.Snapshot` decoded from caller-owned storage or
-transport, the record map is already a `json.RawMessage`, so it can be passed
+When accepting a `notion.Snapshot` from caller-owned storage or transport,
+validate its schema and page identity before storing or rendering it:
+
+```go
+if err := notion.ValidateSnapshot(&snapshot, expectedPageID); err != nil {
+	return err
+}
+```
+
+The record map is already a `json.RawMessage`, so it can then be passed
 directly to `RenderInput.RecordMap`.
 
 If an asset URL is missing from `AssetURLs`, the renderer will not fall back to

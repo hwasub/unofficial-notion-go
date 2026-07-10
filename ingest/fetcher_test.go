@@ -227,6 +227,12 @@ func TestMapNotionUpstreamErrors(t *testing.T) {
 			code:       notionapi.ErrorCodeMaxResponseBytesExceeded,
 		},
 		{
+			name:       "missing blocks",
+			cause:      &notionapi.HTTPError{StatusCode: http.StatusBadGateway, Code: notionapi.ErrorCodeMissingBlocks, Message: "incomplete page"},
+			statusCode: http.StatusBadGateway,
+			code:       notionapi.ErrorCodeMissingBlocks,
+		},
+		{
 			name:       "upstream 5xx",
 			cause:      &notionapi.HTTPError{StatusCode: http.StatusServiceUnavailable, Message: "temporarily unavailable"},
 			statusCode: http.StatusBadGateway,
@@ -510,6 +516,43 @@ func TestRepairReportsFailedView(t *testing.T) {
 	}
 	if report.FailedViews != 1 || len(report.Errors) != 1 {
 		t.Fatalf("report = %+v, want exactly one failed view surfaced as an error", report)
+	}
+}
+
+func TestFetchSnapshotReportsCollectionReducerLimit(t *testing.T) {
+	rootID := "1ad6e61c-f824-80c9-a6c4-d251043457d3"
+	blockIDs := make([]any, 999)
+	for i := range blockIDs {
+		blockIDs[i] = fmt.Sprintf("row-%03d", i)
+	}
+	recordMap := recordMap(pageBlock(rootID, "Root", nil))
+	recordMap["collection_query"] = map[string]any{
+		"collection-id": map[string]any{
+			"view-id": map[string]any{
+				"collection_group_results": map[string]any{"blockIds": blockIDs},
+			},
+		},
+	}
+	client := &fakePageClient{getPageRecordMap: recordMap}
+	var logged bool
+	snapshot, err := FetchSnapshot(context.Background(), FetchRequest{PageID: rootID}, testLimits(), FetchOptions{
+		Client: client,
+		Now:    fixedNow,
+		Log: func(event string, _ map[string]any) {
+			logged = logged || event == "notion_collection_reducer_limit_reached"
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.Truncated.Collections {
+		t.Fatalf("collection truncation flag = false: %+v", snapshot.Truncated)
+	}
+	if !logged {
+		t.Fatal("collection reducer limit event was not logged")
+	}
+	if len(snapshot.Errors) != 1 || !strings.Contains(snapshot.Errors[0].Message, "reducer row limit") {
+		t.Fatalf("snapshot errors = %#v", snapshot.Errors)
 	}
 }
 

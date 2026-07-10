@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -12,6 +13,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/hwasub/unofficial-notion-go/internal/notionrecordmap"
 )
 
 func TestNewAppliesDefaultsThenOptions(t *testing.T) {
@@ -206,6 +209,74 @@ func TestAddSignedURLsNoFileInstances(t *testing.T) {
 	}
 	if _, ok := recordMap["signed_urls"].(map[string]any); !ok {
 		t.Fatalf("signed_urls not reset: %#v", recordMap["signed_urls"])
+	}
+}
+
+func TestAddSignedURLsSignsRoleAndRichTextAssetsAcrossAllBlocks(t *testing.T) {
+	pageID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	imageID := "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+	cover := "attachment:page-cover.png"
+	icon := "attachment:page-icon.png"
+	propertyFile := "attachment:property-file.pdf"
+	image := "attachment:image.png"
+	var requested []SignedURLRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			URLs []SignedURLRequest `json:"urls"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		requested = append(requested, body.URLs...)
+		signed := make([]string, len(body.URLs))
+		for i := range body.URLs {
+			signed[i] = fmt.Sprintf("https://file.notion.so/signed/%d", i)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"signedUrls": signed})
+	}))
+	defer server.Close()
+
+	recordMap := map[string]any{"block": map[string]any{
+		pageID: map[string]any{"value": map[string]any{
+			"id":   pageID,
+			"type": "page",
+			"format": map[string]any{
+				"page_cover": cover,
+				"page_icon":  icon,
+			},
+			"properties": map[string]any{
+				"title": []any{[]any{"Root"}},
+				"files": []any{[]any{"File", []any{[]any{"a", propertyFile}}}},
+			},
+		}},
+		imageID: map[string]any{"value": map[string]any{
+			"id":         imageID,
+			"type":       "image",
+			"properties": map[string]any{"source": []any{[]any{image}}},
+		}},
+	}}
+	client := New(WithAPIBaseURL(server.URL))
+	if err := client.AddSignedURLs(context.Background(), recordMap, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(requested) != 4 {
+		t.Fatalf("signed URL requests = %#v, want four distinct assets", requested)
+	}
+	signed := notionrecordmap.AsMap(recordMap["signed_urls"])
+	for _, key := range []string{
+		pageID,
+		pageID + ":cover",
+		pageID + ":icon",
+		cover,
+		icon,
+		propertyFile,
+		imageID,
+		image,
+	} {
+		if notionrecordmap.StringValue(signed[key]) == "" {
+			t.Errorf("signed_urls missing key %q: %#v", key, signed)
+		}
 	}
 }
 
@@ -404,6 +475,102 @@ func TestGetPageRejectsMaxBlocksBeforeFetchingMissingBlocks(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&syncRecordCalls); got != 0 {
 		t.Fatalf("syncRecordValuesMain calls = %d, want 0", got)
+	}
+}
+
+func TestGetPageBatchesMissingBlockRequests(t *testing.T) {
+	rootID := "1ad6e61c-f824-80c9-a6c4-d251043457d3"
+	children := []string{
+		"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1",
+		"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2",
+		"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa3",
+		"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa4",
+		"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa5",
+	}
+	var batchSizes []int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/loadPageChunk":
+			_ = json.NewEncoder(w).Encode(map[string]any{"recordMap": map[string]any{"block": map[string]any{
+				rootID: map[string]any{"value": map[string]any{"id": rootID, "type": "page", "content": children}},
+			}}})
+		case "/syncRecordValuesMain":
+			var request struct {
+				Requests []struct {
+					ID string `json:"id"`
+				} `json:"requests"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatal(err)
+			}
+			batchSizes = append(batchSizes, len(request.Requests))
+			blocks := map[string]any{}
+			for _, item := range request.Requests {
+				blocks[item.ID] = map[string]any{"value": map[string]any{"id": item.ID, "type": "text"}}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"recordMap": map[string]any{"block": blocks}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := New(WithAPIBaseURL(server.URL))
+	recordMap, err := client.GetPage(context.Background(), rootID, PageOptions{FetchMissingBlocks: true, ChunkLimit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(notionrecordmap.AsMap(recordMap["block"])); got != 1+len(children) {
+		t.Fatalf("block count = %d, want %d", got, 1+len(children))
+	}
+	if !reflect.DeepEqual(batchSizes, []int{2, 2, 1}) {
+		t.Fatalf("batch sizes = %#v, want [2 2 1]", batchSizes)
+	}
+}
+
+func TestGetPageRejectsUnresolvedMissingBlocks(t *testing.T) {
+	rootID := "1ad6e61c-f824-80c9-a6c4-d251043457d3"
+	childID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/loadPageChunk":
+			_ = json.NewEncoder(w).Encode(map[string]any{"recordMap": map[string]any{"block": map[string]any{
+				rootID: map[string]any{"value": map[string]any{"id": rootID, "type": "page", "content": []string{childID}}},
+			}}})
+		case "/syncRecordValuesMain":
+			_, _ = w.Write([]byte(`{"recordMap":{"block":{}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := New(WithAPIBaseURL(server.URL))
+	_, err := client.GetPage(context.Background(), rootID, PageOptions{FetchMissingBlocks: true})
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusBadGateway || httpErr.Code != ErrorCodeMissingBlocks {
+		t.Fatalf("error = %#v, want %s HTTPError", err, ErrorCodeMissingBlocks)
+	}
+}
+
+func TestGetPageRequiresRequestedRootBlock(t *testing.T) {
+	rootID := "1ad6e61c-f824-80c9-a6c4-d251043457d3"
+	otherID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"recordMap": map[string]any{"block": map[string]any{
+			otherID: map[string]any{"value": map[string]any{"id": otherID, "type": "page"}},
+		}}})
+	}))
+	defer server.Close()
+
+	client := New(WithAPIBaseURL(server.URL))
+	_, err := client.GetPage(context.Background(), rootID, PageOptions{})
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusNotFound || httpErr.Code != ErrorCodePageNotFound {
+		t.Fatalf("error = %#v, want %s HTTPError", err, ErrorCodePageNotFound)
 	}
 }
 

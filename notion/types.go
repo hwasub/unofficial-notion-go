@@ -47,10 +47,11 @@ type SnapshotError struct {
 // These constants are the recognized RenderWarning.Kind values, identifying the
 // class of degraded content the renderer surfaces to readers.
 const (
-	RenderWarningFetchErrors         = "fetch_errors"          // one or more pages failed to fetch
-	RenderWarningAssetDownloadErrors = "asset_download_errors" // one or more assets failed to download
-	RenderWarningAssetsTruncated     = "assets_truncated"      // the asset limit was reached
-	RenderWarningBlocksTruncated     = "blocks_truncated"      // the block limit was reached
+	RenderWarningFetchErrors          = "fetch_errors"          // one or more pages failed to fetch
+	RenderWarningAssetDownloadErrors  = "asset_download_errors" // one or more assets failed to download
+	RenderWarningAssetsTruncated      = "assets_truncated"      // the asset limit was reached
+	RenderWarningBlocksTruncated      = "blocks_truncated"      // the block limit was reached
+	RenderWarningCollectionsTruncated = "collections_truncated" // collection rows or views could not be fully captured
 )
 
 // RenderWarning is a single advisory shown to readers when part of a page could
@@ -67,7 +68,7 @@ func RenderWarningsForSnapshot(snapshot *Snapshot) []RenderWarning {
 	if snapshot == nil {
 		return nil
 	}
-	warnings := make([]RenderWarning, 0, 4)
+	warnings := make([]RenderWarning, 0, 5)
 	if len(snapshot.Errors) > 0 {
 		warnings = append(warnings, RenderWarning{Kind: RenderWarningFetchErrors, Count: len(snapshot.Errors)})
 	}
@@ -76,6 +77,9 @@ func RenderWarningsForSnapshot(snapshot *Snapshot) []RenderWarning {
 	}
 	if snapshot.Truncated.Blocks {
 		warnings = append(warnings, RenderWarning{Kind: RenderWarningBlocksTruncated, Count: 1})
+	}
+	if snapshot.Truncated.Collections {
+		warnings = append(warnings, RenderWarning{Kind: RenderWarningCollectionsTruncated, Count: 1})
 	}
 	return warnings
 }

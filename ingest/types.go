@@ -1,5 +1,10 @@
 package ingest
 
+// SnapshotSchemaVersion is the current JSON wire format emitted by
+// FetchSnapshot. The notion package exposes the same constant for transported
+// snapshot validation.
+const SnapshotSchemaVersion = 1
+
 // FetchRequest identifies the Notion page to snapshot and carries optional
 // per-request limit overrides. Either PageID or URL must resolve to a valid
 // page ID. A zero value for a limit field means "use the default".
@@ -61,8 +66,9 @@ type SnapshotLimits struct {
 // SnapshotFlags reports whether output was truncated because a limit dropped
 // content. FetchSnapshot drops assets beyond MaxAssets, but it fails rather than
 // returning a partial block set when MaxBlocks is exceeded. Collections is set
-// when collection-query repair gave up (call or pass budget exhausted, or a
-// view failed to repair), so some database views may be missing rows.
+// when collection-query repair gave up (call or pass budget exhausted, a view
+// failed to repair, or a reducer reached its row limit), so some database views
+// may be missing rows.
 type SnapshotFlags struct {
 	Assets      bool `json:"assets"`
 	Blocks      bool `json:"blocks"`

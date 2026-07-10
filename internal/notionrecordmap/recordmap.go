@@ -158,19 +158,8 @@ func GetPageContentBlockIDs(recordMap map[string]any, blockID string) []string {
 		}
 		if properties := AsMap(block["properties"]); properties != nil {
 			for _, property := range properties {
-				for _, decoration := range AsSlice(property) {
-					part := AsSlice(decoration)
-					if len(part) > 0 {
-						if value := firstPointerValue(part[0]); value != "" {
-							addContentBlocks(value)
-						}
-					}
-				}
-				propertyParts := AsSlice(property)
-				if len(propertyParts) > 0 {
-					if value := firstPointerValue(propertyParts[0]); value != "" {
-						addContentBlocks(value)
-					}
+				for _, value := range richTextPagePointers(property) {
+					addContentBlocks(value)
 				}
 			}
 		}
@@ -202,20 +191,27 @@ func GetPageContentBlockIDs(recordMap map[string]any, blockID string) []string {
 	return out
 }
 
-func firstPointerValue(value any) string {
-	items := AsSlice(value)
-	if len(items) < 2 {
-		return ""
+// richTextPagePointers returns every page-pointer decoration in a Notion
+// rich-text property. A property contains multiple text parts and each part
+// may contain multiple decorations, so looking only at the first of either can
+// silently omit blocks that GetPage must hydrate.
+func richTextPagePointers(value any) []string {
+	var out []string
+	for _, rawPart := range AsSlice(value) {
+		part := AsSlice(rawPart)
+		if len(part) < 2 {
+			continue
+		}
+		for _, rawDecoration := range AsSlice(part[1]) {
+			decoration := AsSlice(rawDecoration)
+			if len(decoration) > 1 && StringValue(decoration[0]) == "p" {
+				if id := StringValue(decoration[1]); id != "" {
+					out = append(out, id)
+				}
+			}
+		}
 	}
-	nested := AsSlice(items[1])
-	if len(nested) == 0 {
-		return ""
-	}
-	pointer := AsSlice(nested[0])
-	if len(pointer) > 1 && StringValue(pointer[0]) == "p" {
-		return StringValue(pointer[1])
-	}
-	return ""
+	return out
 }
 
 // MapKeys returns the keys of value in unspecified order.

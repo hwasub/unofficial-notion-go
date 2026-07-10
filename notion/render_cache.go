@@ -118,6 +118,13 @@ func RenderCacheKey(input RenderInput, locale string) string {
 	writeHashPart(h, strconv.FormatBool(input.UnsafeRenderNotionSignedURLs))
 	writeHashPart(h, input.PageID)
 	writeHashPart(h, input.ResourceSlug)
+	// Render limits are security policy, not just runtime tuning. Hash their
+	// effective values so a render produced under a permissive policy cannot be
+	// served to a later call with stricter bounds. Using effective values keeps
+	// zero ("default") equivalent to spelling out the current default.
+	writeHashPart(h, strconv.Itoa(resolveLimit(input.MaxRecordMapBytes, DefaultMaxRecordMapBytes)))
+	writeHashPart(h, strconv.Itoa(resolveLimit(input.MaxBlocks, DefaultMaxBlocks)))
+	writeHashPart(h, strconv.Itoa(resolveLimit(input.MaxOutputBytes, DefaultMaxOutputBytes)))
 	writeHashPart(h, string(input.RecordMap))
 	writeHashMap(h, input.PagePaths)
 	writeHashMap(h, input.AssetURLs)

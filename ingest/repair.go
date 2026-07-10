@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -18,6 +19,7 @@ import (
 const (
 	maxCollectionRepairPasses = 8
 	maxCollectionRepairCalls  = 100
+	collectionReducerLimit    = 999
 )
 
 // collectionRepairReport records why collection-query repair may have left the
@@ -28,7 +30,59 @@ type collectionRepairReport struct {
 	FailedViews     int
 	BudgetExhausted bool
 	PassesExhausted bool
+	LimitReached    bool
 	Errors          []SnapshotError
+}
+
+func (r *collectionRepairReport) observeReducerLimit(recordMap map[string]any, pageID string, limit int, log func(string, map[string]any)) {
+	views := collectionQueryViewsAtLimit(recordMap, limit)
+	if views == 0 {
+		return
+	}
+	r.LimitReached = true
+	r.Errors = append(r.Errors, SnapshotError{
+		PageID:  pageID,
+		Message: fmt.Sprintf("collection query reached the reducer row limit (%d); additional database rows may be missing", limit),
+	})
+	log("notion_collection_reducer_limit_reached", map[string]any{
+		"page_id": pageID,
+		"limit":   limit,
+		"views":   views,
+	})
+}
+
+func collectionQueryViewsAtLimit(recordMap map[string]any, limit int) int {
+	if limit <= 0 {
+		return 0
+	}
+	count := 0
+	collections := notionrecordmap.AsMap(recordMap["collection_query"])
+	for _, rawViews := range collections {
+		views := notionrecordmap.AsMap(rawViews)
+		for _, rawQuery := range views {
+			query := notionrecordmap.AsMap(rawQuery)
+			if collectionQueryAtLimit(query, limit) {
+				count++
+			}
+		}
+	}
+	return count
+}
+
+func collectionQueryAtLimit(query map[string]any, limit int) bool {
+	if len(notionrecordmap.AsSlice(query["blockIds"])) >= limit {
+		return true
+	}
+	for key, rawResult := range query {
+		if key != "collection_group_results" && !strings.HasPrefix(key, "results:") {
+			continue
+		}
+		result := notionrecordmap.AsMap(rawResult)
+		if len(notionrecordmap.AsSlice(result["blockIds"])) >= limit {
+			return true
+		}
+	}
+	return false
 }
 
 func repairCollectionQueries(ctx context.Context, client PageClient, recordMap map[string]any, maxBlocks int, log func(string, map[string]any)) (collectionRepairReport, error) {
@@ -100,7 +154,7 @@ func repairCollectionQueries(ctx context.Context, client PageClient, recordMap m
 				progressed = true
 				processed[pairKey] = struct{}{}
 				collectionData, err := client.GetCollectionData(ctx, collectionID, viewID, collectionView, notionapi.CollectionOptions{
-					Limit: 999,
+					Limit: collectionReducerLimit,
 					SpaceID: firstNonEmpty(
 						notionrecordmap.StringValue(block["space_id"]),
 						collectionPointerSpaceID(block["format"]),

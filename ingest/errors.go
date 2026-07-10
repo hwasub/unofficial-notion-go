@@ -21,6 +21,9 @@ const (
 	// ErrorCodeMalformedResponse marks an upstream response that exceeded
 	// structural limits (nesting depth, array length).
 	ErrorCodeMalformedResponse = notionapi.ErrorCodeMalformedResponse
+	// ErrorCodeMissingBlocks marks an upstream page response that remained
+	// incomplete after referenced blocks were requested explicitly.
+	ErrorCodeMissingBlocks = notionapi.ErrorCodeMissingBlocks
 	// ErrorCodeFetchTimeout marks a page fetch that exceeded the request timeout.
 	ErrorCodeFetchTimeout = "notion_fetch_timeout"
 	// ErrorCodeRateLimited marks an upstream 429 response.

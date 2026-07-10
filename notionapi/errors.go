@@ -18,11 +18,18 @@ const (
 	// ErrorCodeMalformedResponse marks a decoded response that exceeds the
 	// structural limits Fetch enforces (nesting depth, array length).
 	ErrorCodeMalformedResponse = "malformed_response"
+	// ErrorCodeMissingBlocks marks a page response that remained incomplete
+	// after the client requested every referenced block from Notion.
+	ErrorCodeMissingBlocks = "missing_blocks"
+	// ErrorCodePageNotFound marks a response that did not contain the requested
+	// root page block.
+	ErrorCodePageNotFound = "page_not_found"
 )
 
 // HTTPError reports a non-2xx response from the Notion API or a local response
-// size failure. Fetch returns it so callers can branch on the HTTP status and
-// honor rate limits.
+// validation/completeness failure. Fetch and GetPage return it so callers can
+// branch on the HTTP status, inspect a machine-readable code, and honor rate
+// limits.
 type HTTPError struct {
 	StatusCode   int    // HTTP status code from upstream, or a synthetic status for local guards
 	Code         string // optional machine-readable code for local client failures
