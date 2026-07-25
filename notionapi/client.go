@@ -937,14 +937,6 @@ func ensureMap(parent map[string]any, key string) map[string]any {
 	return current
 }
 
-func mapValue(value any, key string) any {
-	record := notionrecordmap.AsMap(value)
-	if record == nil {
-		return nil
-	}
-	return record[key]
-}
-
 func mergeMap(target map[string]any, source map[string]any) {
 	for key, value := range source {
 		target[key] = value
