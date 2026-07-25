@@ -42,6 +42,7 @@ func visibleCollectionPropertySpecs(view collectionView, coll collection) []coll
 				out = append(out, collectionViewProperty{
 					Property: property,
 					Width:    collectionViewPropertyWidth(data["width"], coll.Schema[property]),
+					Wrap:     collectionViewPropertyWrap(data["wrap"]),
 				})
 			}
 		}
@@ -67,6 +68,14 @@ func visibleCollectionPropertySpecs(view collectionView, coll collection) []coll
 		}
 	}
 	return dedupeCollectionViewProperties(out)
+}
+
+func collectionViewPropertyWrap(value any) *bool {
+	wrap, ok := value.(bool)
+	if !ok {
+		return nil
+	}
+	return &wrap
 }
 
 func collectionViewPropertyWidth(value any, schema collectionProperty) int {
@@ -321,9 +330,36 @@ func checkedAttr(checked bool) string {
 func renderCollectionURL(value string) string {
 	value = strings.TrimSpace(value)
 	if href := safeAttrURL(value); href != "" {
-		return `<a href="` + href + `" rel="noopener noreferrer">` + html.EscapeString(value) + `</a>`
+		label := collectionURLLabel(value)
+		return `<a class="notion-property-url" href="` + href + `" rel="noopener noreferrer"` +
+			attr("title", value) + attr("aria-label", value) + `>` + html.EscapeString(label) + `</a>`
 	}
 	return html.EscapeString(value)
+}
+
+func collectionURLLabel(value string) string {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || parsed.Host == "" {
+		return value
+	}
+	label := parsed.Host
+	if parsed.EscapedPath() != "" && parsed.EscapedPath() != "/" {
+		label += parsed.EscapedPath()
+	}
+	if parsed.RawQuery != "" {
+		label += "?" + parsed.RawQuery
+	}
+	if parsed.Fragment != "" {
+		label += "#" + parsed.Fragment
+	}
+	const maxRunes = 64
+	runes := []rune(label)
+	if len(runes) <= maxRunes {
+		return label
+	}
+	const prefixRunes = 42
+	const suffixRunes = 19
+	return string(runes[:prefixRunes]) + "…" + string(runes[len(runes)-suffixRunes:])
 }
 
 func renderEmailLink(value string) string {

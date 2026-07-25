@@ -31,9 +31,10 @@ var (
 // one Notion page. Everything the renderer trusts about asset and link
 // destinations comes from here, keeping URL safety decisions with the caller.
 type RenderInput struct {
-	RecordMap json.RawMessage   // raw Notion record map containing the page and its blocks
+	RecordMap json.RawMessage   // normalized Notion record map containing the page and its blocks
 	PageID    string            // ID of the page within RecordMap to render as root
 	PagePaths map[string]string // page ID -> URL path, used to link subpages and mentions
+	PageURLs  map[string]string // page ID -> explicit caller-owned URL; takes precedence over PagePaths
 	AssetURLs map[string]string // asset key -> resolved URL for images, files, and media
 	Warnings  []RenderWarning   // advisories rendered as a banner ahead of the content
 	// UnsafeRenderNotionSignedURLs emits direct Notion-hosted signed asset URLs
@@ -243,6 +244,7 @@ type collectionView struct {
 type collectionViewProperty struct {
 	Property string
 	Width    int
+	Wrap     *bool
 }
 
 type collectionQuery struct {
@@ -745,7 +747,11 @@ func renderImageBlock(out *strings.Builder, rm recordMap, blk block, input Rende
 		if strings.TrimSpace(alt) == "" {
 			alt = fileLabel(source)
 		}
-		renderLightboxImage(out, "notion-media__link", src, alt)
+		if href := imageHyperlinkHref(blk, input); href != "" {
+			renderHyperlinkedImage(out, "notion-media__link", src, alt, href)
+		} else {
+			renderLightboxImage(out, "notion-media__link", src, alt)
+		}
 		if caption := richTextWithResolver(blk.Properties["caption"], notionMentionResolver(rm, input)); caption != "" {
 			out.WriteString(`<figcaption>`)
 			out.WriteString(caption)

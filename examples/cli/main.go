@@ -88,9 +88,18 @@ func run(pageURL, outDir, cssPath, jsPath string, maxAssets int) error {
 	if err != nil {
 		return err
 	}
+	pagePaths, err := notion.BuildPagePaths(recordMap, snapshot.RootPageID)
+	if err != nil {
+		return fmt.Errorf("build page links: %w", err)
+	}
+	pageURLs := make(map[string]string, len(pagePaths))
+	for pageID := range pagePaths {
+		pageURLs[pageID] = "https://www.notion.so/" + strings.ReplaceAll(pageID, "-", "")
+	}
 	body, err := notion.RenderPage(notion.RenderInput{
 		RecordMap: recordMap,
 		PageID:    snapshot.RootPageID,
+		PageURLs:  pageURLs,
 		AssetURLs: assetURLs,
 	})
 	if err != nil {

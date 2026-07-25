@@ -861,7 +861,7 @@ func (c *Client) fetchCollections(ctx context.Context, recordMap map[string]any,
 					continue
 				}
 				collectionViews := notionrecordmap.AsMap(recordMap["collection_view"])
-				collectionView := mapValue(collectionViews[instance.ViewID], "value")
+				collectionView := notionrecordmap.GetBlockValue(collectionViews[instance.ViewID])
 				data, err := c.GetCollectionData(ctx, instance.CollectionID, instance.ViewID, collectionView, CollectionOptions{
 					Limit:   opts.CollectionReducerLimit,
 					SpaceID: instance.SpaceID,
@@ -935,14 +935,6 @@ func ensureMap(parent map[string]any, key string) map[string]any {
 	current = map[string]any{}
 	parent[key] = current
 	return current
-}
-
-func mapValue(value any, key string) any {
-	record := notionrecordmap.AsMap(value)
-	if record == nil {
-		return nil
-	}
-	return record[key]
 }
 
 func mergeMap(target map[string]any, source map[string]any) {

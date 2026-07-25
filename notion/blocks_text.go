@@ -383,11 +383,7 @@ func renderTabBlock(out *strings.Builder, rm recordMap, blk block, input RenderI
 		out.WriteString(html.EscapeString(panelID))
 		out.WriteString(`" aria-labelledby="`)
 		out.WriteString(html.EscapeString(buttonID))
-		out.WriteString(`" data-notion-tab-panel`)
-		if i > 0 {
-			out.WriteString(` hidden`)
-		}
-		out.WriteString(`>`)
+		out.WriteString(`" data-notion-tab-panel>`)
 		if len(tab.Content) > 0 {
 			renderBlockList(out, rm, tab.Content, input, depth+1)
 		} else {
@@ -525,7 +521,10 @@ func renderTableOfContents(out *strings.Builder, rm recordMap, input RenderInput
 				if title != "" {
 					items = append(items, item{level: headingLevel(blk.Type), id: headingAnchor(blk.ID), title: title})
 				}
-			case "page":
+			case "page", "quote":
+				// Notion includes headings nested in containers such as
+				// callouts, toggles, and columns, but excludes quote contents
+				// from the table of contents.
 				continue
 			}
 			walk(blk.Content)

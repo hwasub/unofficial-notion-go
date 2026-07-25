@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/hwasub/unofficial-notion-go/ingest"
@@ -31,6 +32,39 @@ func TestWriteFileAtomic(t *testing.T) {
 	}
 	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
 		t.Fatalf("expected exactly one file, got %d (temp left behind?)", len(entries))
+	}
+}
+
+func TestRenderPageURLsUseInternalIDRoute(t *testing.T) {
+	const pageID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	got := renderPageURLs(map[string]string{pageID: pageID})
+	if got[pageID] != "/render?id="+pageID || strings.Contains(got[pageID], "notion.so") {
+		t.Fatalf("render page URL = %q, want internal ID route", got[pageID])
+	}
+}
+
+func TestRenderFetchRequestAcceptsInternalPageID(t *testing.T) {
+	const pageID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	req, ok := renderFetchRequest(httptest.NewRequest("GET", "/render?id="+pageID, nil), 23)
+	if !ok || req.PageID != pageID || req.URL != "" || req.MaxAssets != 23 {
+		t.Fatalf("render fetch request = %+v, %v", req, ok)
+	}
+}
+
+func TestEmbeddedScriptEnhancesServerRenderedTabs(t *testing.T) {
+	script, err := embeddedStatic.ReadFile("static/notion.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(script)
+	for _, want := range []string{
+		"initializeNotionTabs();",
+		`root.classList.add("notion-tabs--enhanced")`,
+		"panel.hidden = panel.id !== targetID",
+	} {
+		if !strings.Contains(source, want) {
+			t.Fatalf("embedded tab script missing %q", want)
+		}
 	}
 }
 

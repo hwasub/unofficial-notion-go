@@ -1,6 +1,7 @@
 package notion
 
 import (
+	"html"
 	"strings"
 	"testing"
 )
@@ -138,7 +139,7 @@ func TestRenderPageRendersCollectionViewRows(t *testing.T) {
 	assertContains(t, html, `<span class="notion-property-head__icon notion-property-head__icon--date" aria-hidden="true"></span><span class="notion-property-head__label">Due</span>`)
 	assertContains(t, html, `<span class="notion-property-head__icon notion-property-head__icon--number" aria-hidden="true"></span><span class="notion-property-head__label">Budget</span>`)
 	assertContains(t, html, `<span class="notion-property-head__icon notion-property-head__icon--formula" aria-hidden="true"></span><span class="notion-property-head__label">Score</span>`)
-	assertContains(t, html, `<td><a class="notion-collection-title" href="/roadmap/cccccccc-cccc-cccc-cccc-cccccccccccc"><span class="notion-page-icon" aria-hidden="true">🧪</span>Launch</a></td>`)
+	assertContains(t, html, `<td class="notion-collection-cell--title"><a class="notion-collection-title" href="/roadmap/cccccccc-cccc-cccc-cccc-cccccccccccc"><span class="notion-page-icon" aria-hidden="true">🧪</span>Launch</a></td>`)
 	assertContains(t, html, `<td><span class="notion-property-pills"><span class="notion-property-pill notion-color--green-background">Ready</span></span></td>`)
 	assertContains(t, html, `<td><span class="notion-property-pills"><span class="notion-property-pill notion-color--blue-background">alpha</span><span class="notion-property-pill notion-color--red-background">beta</span></span></td>`)
 	if strings.Contains(html, "onclick") {
@@ -146,7 +147,7 @@ func TestRenderPageRendersCollectionViewRows(t *testing.T) {
 	}
 	assertContains(t, html, `<td><span class="notion-property-checkbox"><input type="checkbox" disabled aria-label="Checked" checked></span></td>`)
 	assertContains(t, html, `<td><span class="notion-mention">@Person</span></td>`)
-	assertContains(t, html, `<td><a href="https://example.com" rel="noopener noreferrer">https://example.com</a></td>`)
+	assertContains(t, html, `<td><a class="notion-property-url" href="https://example.com" rel="noopener noreferrer" title="https://example.com" aria-label="https://example.com">example.com</a></td>`)
 	assertContains(t, html, `<td><span class="notion-property-number">$12,345.50</span></td>`)
 	assertContains(t, html, `<td><a href="tel:+15550109999">+1 (555) 010-9999</a></td>`)
 	assertContains(t, html, `<td><span class="notion-property-files"><a href="https://cdn.example.com/files/spec.pdf" rel="noopener noreferrer">spec.pdf</a></span></td>`)
@@ -156,6 +157,93 @@ func TestRenderPageRendersCollectionViewRows(t *testing.T) {
 	}
 	assertContains(t, html, `<td><span class="notion-property-number">87.5%</span></td>`)
 	assertContains(t, html, `<td><a class="notion-mention notion-mention--page" href="/roadmap/11111111-1111-1111-1111-111111111111">Related page</a></td>`)
+}
+
+func TestRenderPageHonorsPerColumnWrapAndNormalizesTitles(t *testing.T) {
+	const (
+		rootID       = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+		viewBlockID  = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+		rowID        = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+		collectionID = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+		viewID       = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+	)
+	longURL := "https://example.com/a/very/long/path/that/needs/to/stay/readable?filter=active&sort=descending"
+	recordMap := marshalRecordMapObject(t, map[string]any{
+		"block": map[string]any{
+			rootID: map[string]any{
+				"id": rootID, "type": "page", "content": []string{viewBlockID},
+			},
+			viewBlockID: map[string]any{
+				"id": viewBlockID, "type": "collection_view",
+				"collection_id": collectionID, "view_ids": []string{viewID},
+			},
+			rowID: map[string]any{
+				"id": rowID, "type": "page",
+				"properties": map[string]any{
+					"title": [][]any{{"Formatted title", [][]any{{"b"}, {"i"}, {"h", "yellow_background"}}}},
+					"url":   [][]any{{longURL}},
+				},
+			},
+		},
+		"collection": map[string]any{
+			collectionID: map[string]any{
+				"id": collectionID,
+				"schema": map[string]any{
+					"title": map[string]any{"name": "Name", "type": "title"},
+					"url":   map[string]any{"name": "URL", "type": "url"},
+				},
+			},
+		},
+		"collection_view": map[string]any{
+			viewID: map[string]any{
+				"id": viewID, "type": "table",
+				"format": map[string]any{
+					"table_wrap": true,
+					"table_properties": []map[string]any{
+						{"property": "title", "visible": true, "wrap": true},
+						{"property": "url", "visible": true, "wrap": false},
+					},
+				},
+			},
+		},
+		"collection_query": map[string]any{
+			collectionID: map[string]any{
+				viewID: map[string]any{
+					"collection_group_results": map[string]any{"blockIds": []string{rowID}},
+				},
+			},
+		},
+	})
+
+	rendered, err := RenderPage(RenderInput{RecordMap: recordMap, PageID: rootID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertContains(t, rendered, `<th scope="col" class="notion-collection-cell--wrap">`)
+	assertContains(t, rendered, `<th scope="col" class="notion-collection-cell--nowrap">`)
+	assertContains(t, rendered, `<td class="notion-collection-cell--title notion-collection-cell--wrap"><mark class="notion-highlight notion-color--yellow-background"><em><strong>Formatted title</strong></em></mark></td>`)
+	assertContains(t, rendered, `<td class="notion-collection-cell--nowrap" data-notion-cell-tooltip title="`+html.EscapeString(longURL)+`">`)
+	assertContains(t, rendered, `aria-label="`+html.EscapeString(longURL)+`"`)
+	if strings.Contains(rendered, ">https://example.com/a/very/long/path/that/needs/to/stay/readable") {
+		t.Fatalf("long collection URL was not visually abbreviated: %s", rendered)
+	}
+
+	css := StyleCSS()
+	assertContains(t, css, `.notion-collection-cell--title :is(strong, em, s, code, mark, .notion-underline, [class*="notion-color--"])`)
+}
+
+func TestCollectionURLLabelKeepsShortHostsAndMiddleTruncatesLongURLs(t *testing.T) {
+	if got := collectionURLLabel("https://www.example.com"); got != "www.example.com" {
+		t.Fatalf("short URL label = %q", got)
+	}
+	long := "https://example.com/" + strings.Repeat("segment/", 12) + "tail"
+	got := collectionURLLabel(long)
+	if !strings.Contains(got, "…") || !strings.HasPrefix(got, "example.com/") || !strings.HasSuffix(got, "tail") {
+		t.Fatalf("long URL label = %q, want host with middle ellipsis and tail", got)
+	}
+	if len([]rune(got)) > 64 {
+		t.Fatalf("long URL label has %d runes, want at most 64", len([]rune(got)))
+	}
 }
 
 func TestRenderPageRendersCollectionAggregations(t *testing.T) {
@@ -957,7 +1045,8 @@ func TestRenderPageRendersMultipleCollectionViewsAsTabs(t *testing.T) {
 	assertContains(t, html, `data-notion-tab-target="notion-collection-view-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-panel-1"><span class="notion-tab-button__icon notion-tab-button__icon--board" aria-hidden="true"></span><span class="notion-tab-button__label">Board &lt;unsafe&gt;</span></button>`)
 	assertContains(t, html, `<section class="notion-tab-panel notion-collection-view-panel notion-collection-view-panel--list" role="tabpanel" tabindex="0" id="notion-collection-view-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-panel-0"`)
 	assertContains(t, html, `<section class="notion-tab-panel notion-collection-view-panel notion-collection-view-panel--board" role="tabpanel" tabindex="0" id="notion-collection-view-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-panel-1"`)
-	assertContains(t, html, `data-notion-tab-panel hidden><div class="notion-collection-board">`)
+	assertContains(t, html, `data-notion-tab-panel><div class="notion-collection-board">`)
+	assertNotContains(t, html, `data-notion-tab-panel hidden`)
 	assertContains(t, html, `<article class="notion-collection-list__item"><strong>Tabbed row</strong>`)
 	assertContains(t, html, `<section class="notion-collection-board__lane"><h3>Ready</h3>`)
 	if strings.Contains(html, `<unsafe>`) {
@@ -1070,9 +1159,9 @@ func TestRenderPageRendersGroupedCollectionViews(t *testing.T) {
 	assertContains(t, html, `<div class="notion-collection-groups"><section class="notion-collection-group"><h3><span class="notion-collection-group__label">Backlog</span><span class="notion-collection-group__count">1</span></h3>`)
 	assertContains(t, html, `<section class="notion-collection-group"><h3><span class="notion-collection-group__label">Ready</span><span class="notion-collection-group__count">1</span></h3>`)
 	assertContains(t, html, `<section class="notion-collection-group"><h3><span class="notion-collection-group__label">No value</span><span class="notion-collection-group__count">1</span></h3>`)
-	assertContains(t, html, `<td>Backlog item</td>`)
-	assertContains(t, html, `<td>Ready item</td>`)
-	assertContains(t, html, `<td>Unsorted item</td>`)
+	assertContains(t, html, `<td class="notion-collection-cell--title">Backlog item</td>`)
+	assertContains(t, html, `<td class="notion-collection-cell--title">Ready item</td>`)
+	assertContains(t, html, `<td class="notion-collection-cell--title">Unsorted item</td>`)
 	assertContains(t, html, `<section class="notion-collection notion-collection--list">`)
 	assertContains(t, html, `<article class="notion-collection-list__item"><strong>Backlog item</strong>`)
 }
@@ -1175,9 +1264,9 @@ func TestRenderPageDerivesGroupedCollectionViewPageFromFormat(t *testing.T) {
 	assertContains(t, html, `<div class="notion-collection-groups"><section class="notion-collection-group"><h3><span class="notion-collection-group__label">No value</span><span class="notion-collection-group__count">1</span></h3>`)
 	assertContains(t, html, `<section class="notion-collection-group"><h3><span class="notion-collection-group__label">group 1</span><span class="notion-collection-group__count">1</span></h3>`)
 	assertContains(t, html, `<section class="notion-collection-group"><h3><span class="notion-collection-group__label">group 2</span><span class="notion-collection-group__count">2</span></h3>`)
-	assertContains(t, html, `<td>First row</td>`)
-	assertContains(t, html, `<td>Second row</td>`)
-	assertContains(t, html, `<td>Third row</td>`)
+	assertContains(t, html, `<td class="notion-collection-cell--title">First row</td>`)
+	assertContains(t, html, `<td class="notion-collection-cell--title">Second row</td>`)
+	assertContains(t, html, `<td class="notion-collection-cell--title">Third row</td>`)
 }
 
 func TestRenderPageHonorsCollectionGroupVisibilityAndCollapse(t *testing.T) {

@@ -178,6 +178,32 @@ surfaces. It does not execute provider HTML or scripts. Notion-hosted files
 should be downloaded and served by the caller; public rendered HTML should use
 caller-controlled asset URLs instead of direct signed Notion URLs.
 
+### Page navigation
+
+Page aliases, mentions, and database row titles become links only when the
+caller supplies their destinations. `BuildPagePaths` discovers renderable page
+records and referenced page IDs from a normalized record map:
+
+```go
+pagePaths, err := notion.BuildPagePaths(recordMap, snapshot.RootPageID)
+if err != nil {
+	return err
+}
+
+html, err := notion.RenderPage(notion.RenderInput{
+	RecordMap:    recordMap,
+	PageID:       snapshot.RootPageID,
+	PagePaths:    pagePaths,
+	ResourceSlug: "render", // emits /render/<page-id>
+})
+```
+
+Applications that use query routes or external destinations can instead set
+`RenderInput.PageURLs`. Explicit URLs take precedence over generated
+`PagePaths` and are restricted to safe HTTP(S) or root-relative URLs. The
+runnable server examples map discovered pages to `/render?id=<page-id>`; the
+static CLI links them to their public Notion destinations.
+
 ### Asset handling
 
 Notion-hosted file URLs are temporary. The official API documents

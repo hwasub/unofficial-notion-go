@@ -196,7 +196,11 @@ func applyDecorations(text string, rawText string, decorations any, resolver men
 	if highlight != "" {
 		text = `<mark class="notion-highlight notion-color--` + highlight + `">` + text + `</mark>`
 	}
-	if href != "" {
+	// Mention decorations such as "p", "‣", "lm", and "eoi" may already
+	// produce a complete anchor. Notion sometimes stores a redundant "a"
+	// decoration on the same rich-text part; wrapping the generated mention
+	// would emit invalid nested anchors and break click/focus behavior.
+	if href != "" && !strings.Contains(text, "<a") {
 		text = `<a` + attr("href", href) + ` rel="noopener noreferrer">` + text + `</a>`
 	}
 	return text
