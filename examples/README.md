@@ -20,7 +20,9 @@ go run ./examples/cli \
 Open `out/index.html` in a browser. Flags: `-url` (required), `-out` (default
 `out`), `-css` (stylesheet to copy alongside the HTML; defaults to the embedded
 `notion.StyleCSS()`, pass `none` to skip), `-js` (script to copy alongside the
-HTML; default `examples/notion.js`), `-max-assets`.
+HTML; default `examples/notion.js`), `-max-assets`. Page aliases and database
+rows link to their public Notion destinations because a single-file export does
+not fetch each linked page recursively.
 
 ## `server` — render pages over HTTP
 
@@ -35,7 +37,9 @@ go run ./examples/server -addr :8080 -js examples/notion.js
 
 Open <http://localhost:8080/> and paste a public Notion page URL. The
 stylesheet served at `/notion.css` defaults to the embedded `notion.StyleCSS()`;
-pass `-css <path>` to serve a custom file, or `-css none` to skip it.
+pass `-css <path>` to serve a custom file, or `-css none` to skip it. Page
+aliases, mentions, and database rows use the internal `/render?id=<page-id>`
+route, so they remain navigable inside the demo.
 
 ## `fullapp` — starter app
 
@@ -51,6 +55,8 @@ go run ./examples/fullapp -addr :8080
 
 Open <http://localhost:8080/> and paste a public Notion page URL. Flags:
 `-addr`, `-asset-dir` (default: a temporary directory), and `-max-assets`.
+Linked pages and database rows continue through the app's internal
+`/render?id=<page-id>` route.
 
 ## Notes
 

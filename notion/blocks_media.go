@@ -297,3 +297,58 @@ func renderLightboxImage(out *strings.Builder, className string, src string, alt
 	out.WriteString(html.EscapeString(alt))
 	out.WriteString(`"></a>`)
 }
+
+func imageHyperlinkHref(blk block, input RenderInput) string {
+	raw := imageHyperlinkValue(blk.Format["image_hyperlink"])
+	if raw == "" {
+		raw = imageHyperlinkValue(blk.Properties["link"])
+	}
+	if raw == "" {
+		return ""
+	}
+	if pageID, ok := imageHyperlinkPageID(raw); ok {
+		if href := notionPageHrefForInput(input, pageID); href != "" {
+			return href
+		}
+	}
+	return safeRichTextLinkURL(raw)
+}
+
+func imageHyperlinkValue(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case map[string]any:
+		for _, key := range []string{"url", "href", "link", "page_id", "pageId", "id", "value"} {
+			if candidate := imageHyperlinkValue(typed[key]); candidate != "" {
+				return candidate
+			}
+		}
+	case []any:
+		for _, item := range typed {
+			if candidate := imageHyperlinkValue(item); candidate != "" {
+				return candidate
+			}
+		}
+	}
+	return ""
+}
+
+func imageHyperlinkPageID(raw string) (string, bool) {
+	if pageID, ok := notionPageIDFromLink(raw); ok {
+		return pageID, true
+	}
+	return normalizedPageID(raw)
+}
+
+func renderHyperlinkedImage(out *strings.Builder, className string, src string, alt string, href string) {
+	out.WriteString(`<a class="`)
+	out.WriteString(html.EscapeString(className))
+	out.WriteString(`"`)
+	out.WriteString(attr("href", href))
+	out.WriteString(` rel="noopener noreferrer"><img`)
+	out.WriteString(attr("src", src))
+	out.WriteString(` loading="lazy" decoding="async"`)
+	out.WriteString(attr("alt", alt))
+	out.WriteString(`></a>`)
+}

@@ -33,7 +33,7 @@ type CacheStats struct {
 // renderCacheVersion is mixed into disk cache keys so renderer, sanitizer,
 // template-contract, and local JS/CSS contract changes can invalidate cached
 // Notion HTML without rewriting database rows.
-const renderCacheVersion = "v2"
+const renderCacheVersion = "v3"
 
 var (
 	renderCacheMu sync.RWMutex
@@ -127,6 +127,7 @@ func RenderCacheKey(input RenderInput, locale string) string {
 	writeHashPart(h, strconv.Itoa(resolveLimit(input.MaxOutputBytes, DefaultMaxOutputBytes)))
 	writeHashPart(h, string(input.RecordMap))
 	writeHashMap(h, input.PagePaths)
+	writeHashMap(h, input.PageURLs)
 	writeHashMap(h, input.AssetURLs)
 	for _, warning := range input.Warnings {
 		writeHashPart(h, warning.Kind)

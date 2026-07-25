@@ -27,6 +27,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -106,15 +107,14 @@ func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleRender(w http.ResponseWriter, r *http.Request) {
-	pageURL := strings.TrimSpace(r.URL.Query().Get("url"))
-	if pageURL == "" {
-		http.Error(w, "missing url query parameter", http.StatusBadRequest)
+	req, ok := renderFetchRequest(r, 200)
+	if !ok {
+		http.Error(w, "missing url or id query parameter", http.StatusBadRequest)
 		return
 	}
 
 	ctx := r.Context()
 	defaults := ingest.DefaultLimitsFromEnv()
-	req := ingest.FetchRequest{URL: pageURL, MaxAssets: 200}
 	limits := ingest.RequestLimitsForRequest(req, defaults)
 
 	snapshot, err := ingest.FetchSnapshot(ctx, req, limits, ingest.FetchOptions{})
@@ -132,9 +132,15 @@ func (s *server) handleRender(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	pagePaths, err := notion.BuildPagePaths(recordMap, snapshot.RootPageID)
+	if err != nil {
+		http.Error(w, "build page links: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 	body, err := notion.RenderPage(notion.RenderInput{
 		RecordMap: recordMap,
 		PageID:    snapshot.RootPageID,
+		PageURLs:  renderPageURLs(pagePaths),
 		AssetURLs: assetURLs,
 	})
 	if err != nil {
@@ -144,6 +150,29 @@ func (s *server) handleRender(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	io.WriteString(w, document(snapshot.Page.Title, body, s.cssPath != "none", s.jsPath != ""))
+}
+
+func renderFetchRequest(r *http.Request, maxAssets int) (ingest.FetchRequest, bool) {
+	if r == nil {
+		return ingest.FetchRequest{}, false
+	}
+	pageID := strings.TrimSpace(r.URL.Query().Get("id"))
+	if pageID != "" {
+		return ingest.FetchRequest{PageID: pageID, MaxAssets: maxAssets}, true
+	}
+	pageURL := strings.TrimSpace(r.URL.Query().Get("url"))
+	if pageURL == "" {
+		return ingest.FetchRequest{}, false
+	}
+	return ingest.FetchRequest{URL: pageURL, MaxAssets: maxAssets}, true
+}
+
+func renderPageURLs(pagePaths map[string]string) map[string]string {
+	urls := make(map[string]string, len(pagePaths))
+	for pageID := range pagePaths {
+		urls[pageID] = "/render?id=" + url.QueryEscape(pageID)
+	}
+	return urls
 }
 
 func (s *server) proxyAssets(ctx context.Context, assets []ingest.AssetSnapshot) map[string]string {

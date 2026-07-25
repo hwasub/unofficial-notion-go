@@ -49,6 +49,11 @@ func notionPageHrefForInput(input RenderInput, pageID string) string {
 	if pageID == "" {
 		return ""
 	}
+	if rawURL, ok := input.PageURLs[pageID]; ok {
+		if href := safeURL(rawURL); href != "" && !isNotionAssetURL(href) {
+			return href
+		}
+	}
 	storedPath, ok := input.PagePaths[pageID]
 	if !ok {
 		return ""

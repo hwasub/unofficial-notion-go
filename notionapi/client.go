@@ -861,7 +861,7 @@ func (c *Client) fetchCollections(ctx context.Context, recordMap map[string]any,
 					continue
 				}
 				collectionViews := notionrecordmap.AsMap(recordMap["collection_view"])
-				collectionView := mapValue(collectionViews[instance.ViewID], "value")
+				collectionView := notionrecordmap.GetBlockValue(collectionViews[instance.ViewID])
 				data, err := c.GetCollectionData(ctx, instance.CollectionID, instance.ViewID, collectionView, CollectionOptions{
 					Limit:   opts.CollectionReducerLimit,
 					SpaceID: instance.SpaceID,

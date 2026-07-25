@@ -58,6 +58,7 @@
   );
 
   document.addEventListener("DOMContentLoaded", function () {
+    initializeNotionTabs();
     renderNotionEquations();
     hideAlreadyFailedPreviewImages();
   });
@@ -273,6 +274,17 @@
     });
     notionTabPanels(root).forEach(function (panel) {
       panel.hidden = panel.id !== targetID;
+    });
+  }
+
+  function initializeNotionTabs() {
+    document.querySelectorAll("[data-notion-tabs]").forEach(function (root) {
+      root.classList.add("notion-tabs--enhanced");
+      var buttons = notionTabButtons(root);
+      var selected = buttons.find(function (button) {
+        return button.getAttribute("aria-selected") === "true";
+      }) || buttons[0];
+      if (selected) activateNotionTab(selected);
     });
   }
 

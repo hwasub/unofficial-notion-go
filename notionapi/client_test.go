@@ -442,6 +442,72 @@ func TestGetPageFetchesCollectionsConcurrently(t *testing.T) {
 	}
 }
 
+func TestGetPageUnboxesNestedCollectionViewSettings(t *testing.T) {
+	rootID := "1ad6e61c-f824-80c9-a6c4-d251043457d3"
+	collectionBlockID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	collectionID := "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+	viewID := "cccccccc-cccc-cccc-cccc-cccccccccccc"
+	sortSpec := []any{map[string]any{"property": "priority", "direction": "descending"}}
+
+	var queryBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/loadPageChunk":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"recordMap": map[string]any{
+					"block": map[string]any{
+						rootID: map[string]any{"value": map[string]any{
+							"id": rootID, "type": "page", "content": []any{collectionBlockID},
+						}},
+						collectionBlockID: map[string]any{"value": map[string]any{
+							"id": collectionBlockID, "type": "collection_view",
+							"collection_id": collectionID, "view_ids": []any{viewID},
+						}},
+					},
+					"collection": map[string]any{},
+					"collection_view": map[string]any{
+						viewID: map[string]any{"value": map[string]any{"value": map[string]any{
+							"id": viewID, "type": "board",
+							"format": map[string]any{
+								"board_columns_by": "status",
+								"board_columns": []any{
+									map[string]any{
+										"property": "status",
+										"value":    map[string]any{"type": "select", "value": "Todo"},
+									},
+								},
+							},
+							"query2": map[string]any{"sort": sortSpec},
+						}}},
+					},
+				},
+			})
+		case "/queryCollection":
+			if err := json.NewDecoder(r.Body).Decode(&queryBody); err != nil {
+				t.Error(err)
+			}
+			_, _ = w.Write([]byte(`{"recordMap":{"block":{}},"result":{"reducerResults":{}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := New(WithAPIBaseURL(server.URL))
+	if _, err := client.GetPage(context.Background(), rootID, PageOptions{FetchCollections: true}); err != nil {
+		t.Fatal(err)
+	}
+	loader := notionrecordmap.AsMap(queryBody["loader"])
+	if !reflect.DeepEqual(loader["sort"], sortSpec) {
+		t.Fatalf("loader sort = %#v, want %#v", loader["sort"], sortSpec)
+	}
+	reducers := notionrecordmap.AsMap(loader["reducers"])
+	if _, ok := reducers["board_columns"]; !ok {
+		t.Fatalf("loader reducers = %#v, want board_columns reducer", reducers)
+	}
+}
+
 func TestGetPageRejectsMaxBlocksBeforeFetchingMissingBlocks(t *testing.T) {
 	rootID := "1ad6e61c-f824-80c9-a6c4-d251043457d3"
 	child1ID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"

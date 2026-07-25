@@ -2,6 +2,7 @@ package notion
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -609,6 +610,54 @@ func TestRenderPageSubpageHrefUsesPageIDForUnsafeTitles(t *testing.T) {
 	}
 }
 
+func TestRenderPageUsesExplicitPageURLBeforeGeneratedPath(t *testing.T) {
+	const (
+		rootID    = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+		subpageID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+	)
+	recordMap := marshalRecordMap(t, map[string]any{
+		rootID: map[string]any{
+			"id":      rootID,
+			"type":    "page",
+			"content": []string{subpageID},
+		},
+		subpageID: map[string]any{
+			"id":   subpageID,
+			"type": "page",
+			"properties": map[string]any{
+				"title": [][]any{{"Linked page"}},
+			},
+		},
+	})
+
+	rendered, err := RenderPage(RenderInput{
+		RecordMap:    recordMap,
+		PageID:       rootID,
+		ResourceSlug: "generated",
+		PagePaths:    map[string]string{subpageID: subpageID},
+		PageURLs:     map[string]string{subpageID: "/render?id=" + subpageID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertContains(t, rendered, `href="/render?id=`+subpageID+`"`)
+	if strings.Contains(rendered, `href="/generated/`) {
+		t.Fatalf("generated path overrode explicit page URL: %s", rendered)
+	}
+
+	rendered, err = RenderPage(RenderInput{
+		RecordMap: recordMap,
+		PageID:    rootID,
+		PageURLs:  map[string]string{subpageID: `javascript:alert(1)`},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(rendered, "javascript:") || strings.Contains(rendered, `<a href=`) {
+		t.Fatalf("unsafe explicit page URL was rendered: %s", rendered)
+	}
+}
+
 func TestRenderPageSkipsInvalidSubpageIDs(t *testing.T) {
 	const rootID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 	recordMap := marshalRecordMap(t, map[string]any{
@@ -877,6 +926,56 @@ func TestDirectSubpageLinksCollectsAliasPointers(t *testing.T) {
 	}
 	if len(links) != 1 || links[0].PageID != targetID || links[0].Title != "Alias title" {
 		t.Fatalf("DirectSubpageLinks alias links = %+v, want target alias title", links)
+	}
+}
+
+func TestBuildPagePathsIncludesPagesAliasesAndRichTextReferences(t *testing.T) {
+	const (
+		rootID    = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+		rowID     = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+		aliasID   = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+		targetID  = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+		textID    = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+		mentionID = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+	)
+	recordMap := marshalRecordMap(t, map[string]any{
+		rootID: map[string]any{
+			"id":      rootID,
+			"type":    "page",
+			"content": []string{aliasID, textID},
+		},
+		rowID: map[string]any{
+			"id":   rowID,
+			"type": "page",
+		},
+		aliasID: map[string]any{
+			"id":   aliasID,
+			"type": "alias",
+			"format": map[string]any{
+				"alias_pointer": map[string]any{"id": targetID},
+			},
+		},
+		textID: map[string]any{
+			"id":   textID,
+			"type": "text",
+			"properties": map[string]any{
+				"title": [][]any{{"Mention", [][]any{{"p", mentionID}}}},
+			},
+		},
+	})
+
+	paths, err := BuildPagePaths(recordMap, rootID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		rootID:    "",
+		rowID:     rowID,
+		targetID:  targetID,
+		mentionID: mentionID,
+	}
+	if !reflect.DeepEqual(paths, want) {
+		t.Fatalf("BuildPagePaths() = %#v, want %#v", paths, want)
 	}
 }
 
@@ -1203,7 +1302,8 @@ func TestRenderPageRendersTabBlocks(t *testing.T) {
 	assertContains(t, html, `data-notion-tab-target="notion-tab-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-panel-0"><span class="notion-tab-button__label">Overview</span></button>`)
 	assertContains(t, html, `<span class="notion-tab-button__label">Unsafe &#34;&gt;&lt;script&gt;alert(1)&lt;/script&gt;</span></button>`)
 	assertContains(t, html, `<section class="notion-tab-panel" role="tabpanel" tabindex="0" id="notion-tab-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-panel-1"`)
-	assertContains(t, html, `data-notion-tab-panel hidden><p>Second panel</p></section>`)
+	assertContains(t, html, `data-notion-tab-panel><p>Second panel</p></section>`)
+	assertNotContains(t, html, `data-notion-tab-panel hidden`)
 	if strings.Contains(html, `<script>`) || strings.Contains(html, `"><script`) {
 		t.Fatalf("tab label rendered unsafe markup: %s", html)
 	}

@@ -152,11 +152,7 @@ func renderCollectionViewTabs(out *strings.Builder, rm recordMap, blk block, col
 		out.WriteString(html.EscapeString(panelID))
 		out.WriteString(`" aria-labelledby="`)
 		out.WriteString(html.EscapeString(buttonID))
-		out.WriteString(`" data-notion-tab-panel`)
-		if i > 0 {
-			out.WriteString(` hidden`)
-		}
-		out.WriteString(`>`)
+		out.WriteString(`" data-notion-tab-panel>`)
 		renderCollectionViewBody(out, rm, coll, view.View, view.Query, view.RowIDs, input)
 		renderCollectionAggregations(out, view.View, coll, view.Query, input)
 		out.WriteString(`</section>`)
@@ -241,7 +237,8 @@ func renderCollectionPlaceholder(out *strings.Builder, text string, input Render
 
 func renderCollectionTable(out *strings.Builder, rm recordMap, coll collection, view collectionView, rowIDs []string, properties []collectionViewProperty, input RenderInput) {
 	className := "notion-collection-table"
-	if boolValue(view.Format["table_wrap"]) {
+	defaultWrap := boolValue(view.Format["table_wrap"])
+	if defaultWrap {
 		className += " notion-collection-table--wrap"
 	}
 	out.WriteString(`<div class="notion-table-wrap"><table class="`)
@@ -254,7 +251,9 @@ func renderCollectionTable(out *strings.Builder, rm recordMap, coll collection, 
 	}
 	out.WriteString(`</colgroup><thead><tr>`)
 	for _, spec := range properties {
-		out.WriteString(`<th scope="col">`)
+		out.WriteString(`<th scope="col"`)
+		writeCollectionCellClass(out, spec, false)
+		out.WriteString(`>`)
 		renderCollectionPropertyHead(out, coll, spec.Property)
 		out.WriteString(`</th>`)
 	}
@@ -266,7 +265,17 @@ func renderCollectionTable(out *strings.Builder, rm recordMap, coll collection, 
 		}
 		out.WriteString(`<tr>`)
 		for _, spec := range properties {
-			out.WriteString(`<td>`)
+			wrap := defaultWrap
+			if spec.Wrap != nil {
+				wrap = *spec.Wrap
+			}
+			out.WriteString(`<td`)
+			writeCollectionCellClass(out, spec, spec.Property == "title")
+			if tooltip := collectionCellTooltip(row, coll, spec.Property, wrap); tooltip != "" {
+				out.WriteString(` data-notion-cell-tooltip`)
+				out.WriteString(attr("title", tooltip))
+			}
+			out.WriteString(`>`)
 			if cell := collectionPropertyHTML(rm, row, coll, spec.Property, input); strings.TrimSpace(cell) != "" {
 				out.WriteString(cell)
 			} else {
@@ -277,6 +286,42 @@ func renderCollectionTable(out *strings.Builder, rm recordMap, coll collection, 
 		out.WriteString(`</tr>`)
 	}
 	out.WriteString(`</tbody></table></div>`)
+}
+
+func writeCollectionCellClass(out *strings.Builder, spec collectionViewProperty, title bool) {
+	classes := make([]string, 0, 2)
+	if title {
+		classes = append(classes, "notion-collection-cell--title")
+	}
+	if spec.Wrap != nil {
+		if *spec.Wrap {
+			classes = append(classes, "notion-collection-cell--wrap")
+		} else {
+			classes = append(classes, "notion-collection-cell--nowrap")
+		}
+	}
+	if len(classes) > 0 {
+		out.WriteString(` class="`)
+		out.WriteString(strings.Join(classes, " "))
+		out.WriteString(`"`)
+	}
+}
+
+func collectionCellTooltip(row block, coll collection, property string, wrap bool) string {
+	if wrap {
+		return ""
+	}
+	schema := coll.Schema[property]
+	switch schema.Type {
+	case "title", "url", "email", "phone_number", "text":
+	default:
+		return ""
+	}
+	value := strings.TrimSpace(plainText(row.Properties[property]))
+	if len([]rune(value)) <= 32 {
+		return ""
+	}
+	return value
 }
 
 func renderCollectionPropertyHead(out *strings.Builder, coll collection, property string) {

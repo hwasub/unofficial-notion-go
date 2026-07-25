@@ -306,6 +306,57 @@ func TestRenderPageRendersImageFromSourceAssetAlias(t *testing.T) {
 	}
 }
 
+func TestRenderPageImageHyperlinkTakesPrecedenceOverLightbox(t *testing.T) {
+	const (
+		rootID     = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+		externalID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+		internalID = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+		unsafeID   = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+		targetID   = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+	)
+	recordMap := marshalRecordMap(t, map[string]any{
+		rootID: map[string]any{
+			"id": rootID, "type": "page", "content": []string{externalID, internalID, unsafeID},
+		},
+		externalID: map[string]any{
+			"id": externalID, "type": "image",
+			"properties": map[string]any{"source": [][]any{{"external.png"}}},
+			"format":     map[string]any{"image_hyperlink": "https://example.com/details"},
+		},
+		internalID: map[string]any{
+			"id": internalID, "type": "image",
+			"properties": map[string]any{"source": [][]any{{"internal.png"}}},
+			"format": map[string]any{
+				"image_hyperlink": map[string]any{"page_id": targetID},
+			},
+		},
+		unsafeID: map[string]any{
+			"id": unsafeID, "type": "image",
+			"properties": map[string]any{"source": [][]any{{"unsafe.png"}}},
+			"format":     map[string]any{"image_hyperlink": "javascript:alert(1)"},
+		},
+	})
+	rendered, err := RenderPage(RenderInput{
+		RecordMap: recordMap,
+		PageID:    rootID,
+		PageURLs:  map[string]string{targetID: "/render?id=" + targetID},
+		AssetURLs: map[string]string{
+			externalID: "/assets/external.png",
+			internalID: "/assets/internal.png",
+			unsafeID:   "/assets/unsafe.png",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertContains(t, rendered, `<a class="notion-media__link" href="https://example.com/details" rel="noopener noreferrer"><img src="/assets/external.png"`)
+	assertContains(t, rendered, `<a class="notion-media__link" href="/render?id=`+targetID+`" rel="noopener noreferrer"><img src="/assets/internal.png"`)
+	assertContains(t, rendered, `<a class="notion-media__link" href="/assets/unsafe.png" data-collection-lightbox`)
+	if strings.Contains(rendered, "javascript:") {
+		t.Fatalf("unsafe image hyperlink leaked into output: %s", rendered)
+	}
+}
+
 func TestRenderPageRendersExternalImagesWithoutCaching(t *testing.T) {
 	const (
 		rootID        = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"

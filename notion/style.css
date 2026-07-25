@@ -1294,6 +1294,19 @@
   white-space: normal;
 }
 
+.notion-collection-table th.notion-collection-cell--wrap,
+.notion-collection-table td.notion-collection-cell--wrap {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.notion-collection-table th.notion-collection-cell--nowrap,
+.notion-collection-table td.notion-collection-cell--nowrap {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .notion-code {
   --code-bg: var(--notion-code-bg);
   --code-fg: var(--notion-code-fg);
@@ -2288,6 +2301,25 @@
   border-bottom: 0;
   color: var(--fg);
   text-decoration: none;
+}
+
+.notion-collection-title :is(strong, em, s, code, mark, .notion-underline, [class*="notion-color--"]),
+.notion-collection-cell--title :is(strong, em, s, code, mark, .notion-underline, [class*="notion-color--"]),
+.notion-collection-card > strong :is(strong, em, s, code, mark, .notion-underline, [class*="notion-color--"]),
+.notion-collection-list__item > strong :is(strong, em, s, code, mark, .notion-underline, [class*="notion-color--"]) {
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-decoration: none;
+}
+
+.notion-property-url {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  white-space: nowrap;
 }
 
 .notion-property-pills {

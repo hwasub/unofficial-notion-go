@@ -64,6 +64,22 @@ func TestDocumentIncludesOptionalAssets(t *testing.T) {
 	}
 }
 
+func TestRenderPageURLsUseInternalIDRoute(t *testing.T) {
+	const pageID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	got := renderPageURLs(map[string]string{pageID: pageID})
+	if got[pageID] != "/render?id="+pageID {
+		t.Fatalf("render page URL = %q, want internal ID route", got[pageID])
+	}
+}
+
+func TestRenderFetchRequestAcceptsInternalPageID(t *testing.T) {
+	const pageID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	req, ok := renderFetchRequest(httptest.NewRequest("GET", "/render?id="+pageID, nil), 17)
+	if !ok || req.PageID != pageID || req.URL != "" || req.MaxAssets != 17 {
+		t.Fatalf("render fetch request = %+v, %v", req, ok)
+	}
+}
+
 func TestServerFetchRejectsOversizedAsset(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(make([]byte, 64))

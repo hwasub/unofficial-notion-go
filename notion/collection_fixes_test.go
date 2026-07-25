@@ -243,12 +243,12 @@ func TestRenderCollectionPeopleComputedMap(t *testing.T) {
 	}
 }
 
-// TestRenderCollectionURLTrims ensures the displayed link text is trimmed to
-// match the normalized href.
+// TestRenderCollectionURLTrims ensures the URL and accessible label are
+// trimmed while the visible text uses the compact host form.
 func TestRenderCollectionURLTrims(t *testing.T) {
 	got := renderCollectionURL("  https://example.com  ")
-	if !strings.Contains(got, `>https://example.com</a>`) {
-		t.Fatalf("renderCollectionURL = %q, want trimmed link text", got)
+	if !strings.Contains(got, `title="https://example.com" aria-label="https://example.com">example.com</a>`) {
+		t.Fatalf("renderCollectionURL = %q, want trimmed accessible and visible labels", got)
 	}
 	if strings.Contains(got, "> https") || strings.Contains(got, "com </a>") {
 		t.Fatalf("renderCollectionURL = %q, link text should not contain surrounding whitespace", got)

@@ -54,11 +54,13 @@ func TestNormalizeRecordMapKeepsOnlySafeAutomationData(t *testing.T) {
 		"automation": map[string]any{
 			automationID: map[string]any{
 				"value": map[string]any{
-					"id":         automationID,
-					"action_ids": []any{actionID},
-					"properties": map[string]any{"name": "Open docs", "icon": "link", "secret": "drop"},
-					"permissions": []any{
-						map[string]any{"role": "reader"},
+					"value": map[string]any{
+						"id":         automationID,
+						"action_ids": []any{actionID},
+						"properties": map[string]any{"name": "Open docs", "icon": "link", "secret": "drop"},
+						"permissions": []any{
+							map[string]any{"role": "reader"},
+						},
 					},
 				},
 			},
@@ -66,11 +68,13 @@ func TestNormalizeRecordMapKeepsOnlySafeAutomationData(t *testing.T) {
 		"automation_action": map[string]any{
 			actionID: map[string]any{
 				"value": map[string]any{
-					"id":   actionID,
-					"type": "open_page",
-					"config": map[string]any{
-						"target":        map[string]any{"type": "url", "url": "https://example.com/docs"},
-						"customHeaders": []any{map[string]any{"key": "Authorization", "value": "secret"}},
+					"value": map[string]any{
+						"id":   actionID,
+						"type": "open_page",
+						"config": map[string]any{
+							"target":        map[string]any{"type": "url", "url": "https://example.com/docs"},
+							"customHeaders": []any{map[string]any{"key": "Authorization", "value": "secret"}},
+						},
 					},
 				},
 			},

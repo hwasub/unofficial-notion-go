@@ -64,6 +64,15 @@ func TestRenderCacheKeyIncludesLocalizationVersion(t *testing.T) {
 	}
 }
 
+func TestRenderCacheKeyIncludesExplicitPageURLs(t *testing.T) {
+	input := RenderInput{PageID: "page", RecordMap: []byte(`{"block":{}}`)}
+	withURL := input
+	withURL.PageURLs = map[string]string{"page": "/render?id=page"}
+	if RenderCacheKey(input, "en") == RenderCacheKey(withURL, "en") {
+		t.Fatal("RenderCacheKey did not include PageURLs")
+	}
+}
+
 func TestRenderCacheKeyIncludesUnsafeFlag(t *testing.T) {
 	input := RenderInput{PageID: "page", RecordMap: []byte(`{"block":{}}`)}
 	unsafe := input

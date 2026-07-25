@@ -122,13 +122,13 @@ func (a *app) handleRender(w http.ResponseWriter, r *http.Request) {
 	}
 
 	pageURL := strings.TrimSpace(r.URL.Query().Get("url"))
-	if pageURL == "" {
+	req, ok := renderFetchRequest(r, a.maxAssets)
+	if !ok {
 		writeHTML(w, document("Notion renderer starter", "", homeBody("Enter a public Notion page URL.")))
 		return
 	}
 
 	defaults := ingest.DefaultLimitsFromEnv()
-	req := ingest.FetchRequest{URL: pageURL, MaxAssets: a.maxAssets}
 	limits := ingest.RequestLimitsForRequest(req, defaults)
 
 	snapshot, err := ingest.FetchSnapshot(r.Context(), req, limits, ingest.FetchOptions{})
@@ -144,10 +144,16 @@ func (a *app) handleRender(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "marshal record map: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	pagePaths, err := notion.BuildPagePaths(recordMap, snapshot.RootPageID)
+	if err != nil {
+		http.Error(w, "build page links: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	body, err := notion.RenderPage(notion.RenderInput{
 		RecordMap: recordMap,
 		PageID:    snapshot.RootPageID,
+		PageURLs:  renderPageURLs(pagePaths),
 		AssetURLs: assetURLs,
 		Warnings:  warningsForSnapshot(snapshot, assetErrors),
 	})
@@ -157,6 +163,29 @@ func (a *app) handleRender(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeHTML(w, document(firstNonEmpty(snapshot.Page.Title, "Rendered Notion page"), pageURL, body))
+}
+
+func renderFetchRequest(r *http.Request, maxAssets int) (ingest.FetchRequest, bool) {
+	if r == nil {
+		return ingest.FetchRequest{}, false
+	}
+	pageID := strings.TrimSpace(r.URL.Query().Get("id"))
+	if pageID != "" {
+		return ingest.FetchRequest{PageID: pageID, MaxAssets: maxAssets}, true
+	}
+	pageURL := strings.TrimSpace(r.URL.Query().Get("url"))
+	if pageURL == "" {
+		return ingest.FetchRequest{}, false
+	}
+	return ingest.FetchRequest{URL: pageURL, MaxAssets: maxAssets}, true
+}
+
+func renderPageURLs(pagePaths map[string]string) map[string]string {
+	urls := make(map[string]string, len(pagePaths))
+	for pageID := range pagePaths {
+		urls[pageID] = "/render?id=" + url.QueryEscape(pageID)
+	}
+	return urls
 }
 
 func (a *app) storeAssets(ctx context.Context, assets []ingest.AssetSnapshot) (map[string]string, int) {

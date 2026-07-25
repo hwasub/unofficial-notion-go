@@ -49,6 +49,56 @@ func TestApplyDecorationsColorForegroundVsBackground(t *testing.T) {
 	}
 }
 
+func TestApplyDecorationsDoesNotNestMentionAnchors(t *testing.T) {
+	resolver := func(kind string, value any, rawText string) string {
+		switch kind {
+		case "p":
+			return `<a class="notion-mention" href="/page">Page</a>`
+		case "lm":
+			return `<span class="notion-link-mention"><a href="https://example.com">Link</a></span>`
+		default:
+			return ""
+		}
+	}
+	tests := []struct {
+		name        string
+		decorations []any
+	}{
+		{
+			name: "page mention plus link",
+			decorations: []any{
+				[]any{"p", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"},
+				[]any{"a", "https://example.com/redundant"},
+			},
+		},
+		{
+			name: "external link mention plus link",
+			decorations: []any{
+				[]any{"‣", []any{"https://example.com/mention", "Mention"}},
+				[]any{"a", "https://example.com/redundant"},
+			},
+		},
+		{
+			name: "rich link mention plus link",
+			decorations: []any{
+				[]any{"lm", "https://example.com/mention"},
+				[]any{"a", "https://example.com/redundant"},
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := applyDecorations("label", "label", tc.decorations, resolver)
+			if count := strings.Count(got, "<a"); count != 1 {
+				t.Fatalf("anchor count = %d, want 1: %s", count, got)
+			}
+			if strings.Contains(got, "redundant") {
+				t.Fatalf("redundant outer link wrapped mention: %s", got)
+			}
+		})
+	}
+}
+
 func TestNotionLinkFragmentAnchor(t *testing.T) {
 	block := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	page := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -103,4 +153,41 @@ func TestRenderTableOfContentsHandlesContentCycle(t *testing.T) {
 	if !strings.Contains(html, "notion-toc") || !strings.Contains(html, "Heading One") {
 		t.Fatalf("table of contents should render the heading despite the content cycle: %s", html)
 	}
+}
+
+func TestRenderTableOfContentsIncludesCalloutsButExcludesQuotes(t *testing.T) {
+	const (
+		rootID           = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+		tocID            = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+		calloutID        = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+		calloutHeadingID = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+		quoteID          = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+		quoteHeadingID   = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+	)
+	rm := marshalRecordMap(t, map[string]any{
+		rootID: map[string]any{
+			"id": rootID, "type": "page", "content": []any{tocID, calloutID, quoteID},
+		},
+		tocID: map[string]any{"id": tocID, "type": "table_of_contents"},
+		calloutID: map[string]any{
+			"id": calloutID, "type": "callout", "content": []any{calloutHeadingID},
+		},
+		calloutHeadingID: map[string]any{
+			"id": calloutHeadingID, "type": "header",
+			"properties": map[string]any{"title": [][]any{{"Callout heading"}}},
+		},
+		quoteID: map[string]any{
+			"id": quoteID, "type": "quote", "content": []any{quoteHeadingID},
+		},
+		quoteHeadingID: map[string]any{
+			"id": quoteHeadingID, "type": "header",
+			"properties": map[string]any{"title": [][]any{{"Quote heading"}}},
+		},
+	})
+	rendered, err := RenderPage(RenderInput{RecordMap: rm, PageID: rootID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertContains(t, rendered, `href="#notion-dddddddddddddddddddddddddddddddd">Callout heading</a>`)
+	assertNotContains(t, rendered, `href="#notion-ffffffffffffffffffffffffffffffff">Quote heading</a>`)
 }

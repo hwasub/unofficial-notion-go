@@ -6,6 +6,46 @@ import (
 	"sort"
 )
 
+// BuildPagePaths returns the PagePaths membership map for every page that can
+// be linked from a normalized record map. The root maps to the empty path and
+// every other page maps to its normalized ID, matching RenderInput's safe
+// ResourceSlug routing contract. It includes page records (including database
+// rows), alias targets, and rich-text page references.
+func BuildPagePaths(rawRecordMap json.RawMessage, pageID string) (map[string]string, error) {
+	var rm recordMap
+	if err := json.Unmarshal(rawRecordMap, &rm); err != nil {
+		return nil, err
+	}
+	rootID := NormalizeID(pageID)
+	if _, ok := rm.Block[rootID]; !ok {
+		return nil, fmt.Errorf("notion root page %q not found", pageID)
+	}
+
+	paths := map[string]string{rootID: ""}
+	add := func(rawID string) {
+		id, ok := normalizedPageID(rawID)
+		if !ok || id == rootID {
+			return
+		}
+		paths[id] = id
+	}
+	for id, blk := range rm.Block {
+		if blk.Type == "page" {
+			add(id)
+		}
+		if linkedID, ok := linkedPageID(blk); ok {
+			add(linkedID)
+		}
+		if linkedID, ok := imageHyperlinkPageID(imageHyperlinkValue(blk.Format["image_hyperlink"])); ok {
+			add(linkedID)
+		}
+		for _, candidate := range richTextSubpageLinkCandidates(blk.Properties) {
+			add(candidate.PageID)
+		}
+	}
+	return paths, nil
+}
+
 // DirectSubpageLinks returns the child pages directly linked from the page
 // identified by pageID within rawRecordMap. It collects both child-page and
 // alias blocks and inline page mentions/links whose target is a direct child,

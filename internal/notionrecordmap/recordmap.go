@@ -125,7 +125,7 @@ func GetBlockCollectionID(block map[string]any, recordMap map[string]any) string
 // GetPageContentBlockIDs walks recordMap starting at blockID (or the first
 // block when blockID is empty) and returns the IDs of all reachable content
 // blocks in traversal order, following content, property pointers, and
-// transclusion references while stopping at nested pages.
+// alias/transclusion references while stopping at nested pages.
 func GetPageContentBlockIDs(recordMap map[string]any, blockID string) []string {
 	blocks := AsMap(recordMap["block"])
 	if len(blocks) == 0 {
@@ -164,8 +164,11 @@ func GetPageContentBlockIDs(recordMap map[string]any, blockID string) []string {
 			}
 		}
 		if format := AsMap(block["format"]); format != nil {
-			pointer := AsMap(format["transclusion_reference_pointer"])
-			if pointer != nil {
+			for _, key := range []string{"alias_pointer", "transclusion_reference_pointer"} {
+				pointer := AsMap(format[key])
+				if pointer == nil {
+					continue
+				}
 				if value := StringValue(pointer["id"]); value != "" {
 					addContentBlocks(value)
 				}
