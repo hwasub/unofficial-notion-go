@@ -2,32 +2,24 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/hwasub/unofficial-notion-go.svg)](https://pkg.go.dev/github.com/hwasub/unofficial-notion-go)
 [![CI](https://github.com/hwasub/unofficial-notion-go/actions/workflows/ci.yml/badge.svg)](https://github.com/hwasub/unofficial-notion-go/actions/workflows/ci.yml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/hwasub/unofficial-notion-go)](https://goreportcard.com/report/github.com/hwasub/unofficial-notion-go)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Unofficial Go client and renderer for public Notion pages.
+Fetch public Notion pages and render them as safe, static HTML from Go.
 
-It has zero third-party dependencies — only the Go standard library.
+The module has zero third-party dependencies and uses only the Go standard
+library. It provides the pieces needed to:
 
-This library is intended to provide a Go-native public Notion page workflow:
-
-- fetch a public Notion page through Notion's internal web API;
-- normalize the returned record map into a stable snapshot shape;
-- discover Notion-hosted assets that callers may download and proxy;
-- render sanitized, static HTML for public readers.
-
-## Install
-
-```sh
-go get github.com/hwasub/unofficial-notion-go
-```
-
-Requires Go 1.25 or newer.
+- fetch a public page through Notion's internal web API;
+- normalize the response into a stable snapshot;
+- discover images and files for download to caller-controlled storage;
+- render sanitized HTML with page navigation and database views; and
+- serve a version-matched, embedded stylesheet.
 
 ## Status
 
 Experimental and **pre-1.0**: the public API may change between minor versions
-until a v1.0.0 release. Pin a version before upgrading.
+until a v1.0.0 release. Pin the module version and read the
+[changelog](#changelog) before upgrading.
 
 This project is not affiliated with Notion and does not use Notion's official
 REST API at `api.notion.com`. It calls internal endpoints under
@@ -37,16 +29,129 @@ Review Notion's current terms and policies before using this library in a
 product. Callers are responsible for permissions, rate limiting, data handling,
 and compliance with Notion's terms.
 
+## Quick start
+
+### Requirements
+
+- Go 1.25 or newer.
+- A public Notion page URL. Confirm that the page opens in a private browser
+  window without signing in.
+- Network access to `www.notion.so`.
+
+### Try the starter app
+
+The quickest way to see the complete flow is to run the included starter app.
+It fetches a page, downloads its assets, serves the embedded stylesheet, and
+keeps linked pages navigable:
+
+```sh
+git clone https://github.com/hwasub/unofficial-notion-go.git
+cd unofficial-notion-go
+go run ./examples/fullapp -addr :8080
+```
+
+Open <http://localhost:8080/>, paste a public page URL, and select **Render**.
+The starter app is intentionally small and is suitable as a reference, not as a
+production deployment.
+
+### Add the module to your application
+
+Install the current release explicitly:
+
+```sh
+go get github.com/hwasub/unofficial-notion-go@v0.1.2
+```
+
+The following program fetches one page, renders its text and external content,
+and writes `page.html` together with the matching `notion.css`:
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"log"
+	"os"
+
+	"github.com/hwasub/unofficial-notion-go/ingest"
+	"github.com/hwasub/unofficial-notion-go/notion"
+)
+
+func main() {
+	if len(os.Args) != 2 {
+		log.Fatal("usage: go run . <public-notion-page-url>")
+	}
+
+	req := ingest.FetchRequest{
+		URL:       os.Args[1],
+		MaxAssets: 200,
+	}
+	limits := ingest.RequestLimitsForRequest(
+		req,
+		ingest.DefaultLimitsFromEnv(),
+	)
+	snapshot, err := ingest.FetchSnapshot(
+		context.Background(),
+		req,
+		limits,
+		ingest.FetchOptions{},
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	recordMap, err := json.Marshal(snapshot.Page.RecordMap)
+	if err != nil {
+		log.Fatal(err)
+	}
+	renderedHTML, err := notion.RenderPage(notion.RenderInput{
+		RecordMap: recordMap,
+		PageID:    snapshot.RootPageID,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	document := `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="notion.css">
+</head>
+<body><main class="notion-body-wrap">` + renderedHTML + `</main></body>
+</html>`
+
+	if err := os.WriteFile("page.html", []byte(document), 0o644); err != nil {
+		log.Fatal(err)
+	}
+	if err := os.WriteFile("notion.css", []byte(notion.StyleCSS()), 0o644); err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+Run it with:
+
+```sh
+go run . "https://www.notion.so/<public-page>"
+```
+
+For safety, Notion-hosted images and files are not emitted until you download
+them and supply caller-controlled URLs through `RenderInput.AssetURLs`. See
+[Asset handling](#asset-handling), or use the starter app for a complete,
+runnable implementation.
+
 ## Packages
 
-The module exposes three public packages, layered low to high:
+Most applications should start with `ingest` and `notion`:
 
-- `notionapi`: low-level client for Notion's private web API — authenticate,
-  fetch a page's record map, query collections, fetch blocks, and sign file
-  URLs. Use it directly when you want raw endpoint access.
-- `ingest`: high-level page snapshot built on `notionapi` — snapshot fetch,
-  normalization, collection repair, asset discovery, limits, and errors.
-- `notion`: safe static HTML renderer plus snapshot and render-warning types.
+| Package | Use it for |
+| --- | --- |
+| [`ingest`](https://pkg.go.dev/github.com/hwasub/unofficial-notion-go/ingest) | Fetching and normalizing a page, repairing collection data, discovering assets, and applying request limits. |
+| [`notion`](https://pkg.go.dev/github.com/hwasub/unofficial-notion-go/notion) | Rendering snapshots as sanitized HTML, building page links, validating stored snapshots, and serving the embedded CSS. |
+| [`notionapi`](https://pkg.go.dev/github.com/hwasub/unofficial-notion-go/notionapi) | Direct access to low-level internal endpoints when the high-level snapshot workflow is not enough. |
 
 Internal helpers — ID parsing, the byte-budgeted cache, and record-map
 utilities — live under `internal/` and are not part of the public API.
@@ -54,6 +159,26 @@ utilities — live under `internal/` and are not part of the public API.
 This repository does not provide a snapshot HTTP endpoint. If an application
 needs a remote ingestor service, that service and its route contract are caller
 responsibilities.
+
+## Runnable examples
+
+The [`examples`](examples/) directory contains three end-to-end programs:
+
+- [`cli`](examples/cli/) exports `index.html`, assets, CSS, and the sample
+  interaction script to a directory.
+- [`server`](examples/server/) fetches and renders pages on demand and keeps
+  downloaded assets in memory.
+- [`fullapp`](examples/fullapp/) is a copyable starter with on-disk assets,
+  internal page navigation, styling, interactions, and KaTeX support.
+
+```sh
+go run ./examples/cli -url "https://www.notion.so/<public-page>" -out ./out
+go run ./examples/server -addr :8080
+go run ./examples/fullapp -addr :8080
+```
+
+See the [examples guide](examples/README.md) for flags, behavior, and production
+hardening notes.
 
 ## Supported blocks
 
@@ -64,47 +189,6 @@ collection views; images, video, audio, files, PDFs, bookmarks, tweets, and the
 common embed providers; columns, breadcrumbs, table of contents, synced blocks,
 tabs, and subpage links. Unknown or unsupported block types degrade to a safe
 default (a titled link when one is available) rather than failing the render.
-
-## Example
-
-```go
-package main
-
-import (
-	"context"
-	"fmt"
-
-	"github.com/hwasub/unofficial-notion-go/ingest"
-)
-
-func main() {
-	defaults := ingest.DefaultLimitsFromEnv()
-	req := ingest.FetchRequest{
-		URL:       "https://www.notion.so/example/Example-1ad6e61cf82480c9a6c4d251043457d3",
-		MaxAssets: 200,
-	}
-	snapshot, err := ingest.FetchSnapshot(
-		context.Background(),
-		req,
-		ingest.RequestLimitsForRequest(req, defaults),
-		ingest.FetchOptions{},
-	)
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println(snapshot.RootPageID)
-}
-```
-
-For complete, runnable programs that fetch a page, download its assets, and
-render HTML — a CLI, a small HTTP server, and a starter app — see the
-[`examples`](examples/) directory:
-
-```sh
-go run ./examples/cli -url "https://www.notion.so/<public-page>" -out ./out
-go run ./examples/server -addr :8080
-go run ./examples/fullapp -addr :8080
-```
 
 ## Stylesheet and JS
 
@@ -222,7 +306,8 @@ The intended asset flow is:
    static directory, object storage bucket, CDN, or authenticated media proxy.
 4. Build `RenderInput.AssetURLs` from each asset key to the caller-controlled
    URL, then call `RenderPage`.
-5. Before persisting snapshots, call `ScrubSnapshotForStorage` to remove
+5. Before persistence, convert the result to the wire-compatible
+   `notion.Snapshot`, validate it, and call `ScrubSnapshotForStorage` to remove
    ephemeral signed URLs from both `snapshot.Assets` and the record map.
 
 `/notion-assets/` is only an example prefix used in tests and sample render
@@ -260,17 +345,34 @@ html, err := notion.RenderPage(notion.RenderInput{
 })
 ```
 
-When accepting a `notion.Snapshot` from caller-owned storage or transport,
-validate its schema and page identity before storing or rendering it:
+`ingest.Snapshot` is the fetch-oriented type; `notion.Snapshot` is its
+wire-compatible storage and rendering counterpart. Convert, validate, and
+scrub a freshly fetched snapshot before persistence:
 
 ```go
-if err := notion.ValidateSnapshot(&snapshot, expectedPageID); err != nil {
+snapshotJSON, err := json.Marshal(snapshot)
+if err != nil {
 	return err
 }
+
+var storedSnapshot notion.Snapshot
+if err := json.Unmarshal(snapshotJSON, &storedSnapshot); err != nil {
+	return err
+}
+if err := notion.ValidateSnapshot(&storedSnapshot, snapshot.RootPageID); err != nil {
+	return err
+}
+safeSnapshot, err := notion.ScrubSnapshotForStorage(&storedSnapshot)
+if err != nil {
+	return err
+}
+// Persist safeSnapshot, which contains no signed Notion URLs.
 ```
 
-The record map is already a `json.RawMessage`, so it can then be passed
-directly to `RenderInput.RecordMap`.
+When reading a `notion.Snapshot` back from caller-owned storage or transport,
+validate it again against the requested page identity before rendering it. Its
+record map is already a `json.RawMessage`, so it can be passed directly to
+`RenderInput.RecordMap`.
 
 If an asset URL is missing from `AssetURLs`, the renderer will not fall back to
 the original Notion-hosted URL. It will omit the media or render an unavailable
@@ -296,6 +398,83 @@ html, err := notion.RenderPage(notion.RenderInput{
 Do not enable this option in production. It can leak private, short-lived asset
 credentials into public HTML, produce pages that break after URL expiry, and
 bypass the caller-controlled asset proxy/storage contract above.
+
+## Production checklist
+
+Before exposing rendered pages to users:
+
+1. Keep finite fetch and render limits; the library defaults are a useful
+   baseline.
+2. Inspect `Snapshot.Errors` and `Snapshot.Truncated` so partial asset or
+   collection results are visible to operators and readers.
+3. Download signed asset URLs immediately, store the bytes on an origin you
+   control, and pass only those stable URLs to `RenderInput.AssetURLs`.
+4. Map linked pages through `RenderInput.PageURLs` or a route backed by
+   `BuildPagePaths`.
+5. Serve `notion.StyleCSS()` from the same module version as the renderer and
+   copy only the interactions your application needs from `examples/notion.js`.
+6. Convert fetched results to `notion.Snapshot`, validate them, and call
+   `ScrubSnapshotForStorage` before persistence.
+7. Add application-level timeouts, caching, rate limits, content-security
+   policy, asset content-type controls, and logging.
+
+## Troubleshooting
+
+- **The page cannot be fetched:** verify that the exact URL opens in a private
+  browser window without an account. Private or workspace-only pages are not
+  available to the default high-level client.
+- **Images or files are missing:** this is the safe default. Download each
+  `AssetSnapshot.SignedURL` and populate `RenderInput.AssetURLs`; do not persist
+  or publish signed Notion URLs.
+- **Tabs, lightboxes, or copy buttons do nothing:** static HTML and CSS work
+  without JavaScript, but those enhancements require the hooks demonstrated in
+  [`examples/notion.js`](examples/notion.js).
+- **Subpages or database rows are not navigable:** provide `PageURLs`, or use
+  `BuildPagePaths` together with a matching application route.
+- **An upgrade changes markup or behavior:** keep the module pinned, review the
+  entries below, and compare the relevant version tags before upgrading.
+
+## Changelog
+
+This section summarizes user-visible changes. Follow the linked comparisons for
+the complete code history.
+
+### [v0.1.2](https://github.com/hwasub/unofficial-notion-go/tree/v0.1.2) — 2026-07-25
+
+- Expanded internal page navigation to aliases, mentions, rich-text references,
+  database rows, and explicit image hyperlinks.
+- Improved nested collection hydration and collection presentation, including
+  property wrapping, normalized titles, URL labels, grouping, and formulas.
+- Made tab content progressively available without JavaScript; the sample
+  script now enhances it into an interactive tab interface.
+- Fixed heading-anchor and table-of-contents traversal edge cases and hardened
+  malformed or cyclic record-map handling.
+- Updated all runnable examples to match the navigation, asset, styling, and
+  interaction contracts.
+
+[Compare v0.1.1...v0.1.2](https://github.com/hwasub/unofficial-notion-go/compare/v0.1.1...v0.1.2)
+
+### [v0.1.1](https://github.com/hwasub/unofficial-notion-go/tree/v0.1.1) — 2026-07-10
+
+- Added snapshot schema and page-identity validation for stored or transported
+  snapshots.
+- Prevented incomplete block snapshots and surfaced bounded collection-repair
+  failures through structured errors and truncation flags.
+- Hardened upstream response validation, cancellation, collection fetching, and
+  render-cache limit isolation.
+- Kept the `ingest` and `notion` snapshot wire formats explicitly compatible.
+
+[Compare v0.1.0...v0.1.1](https://github.com/hwasub/unofficial-notion-go/compare/v0.1.0...v0.1.1)
+
+### [v0.1.0](https://github.com/hwasub/unofficial-notion-go/tree/v0.1.0) — 2026-06-25
+
+- Added public render input and output limits.
+- Rendered the root page title with a stable heading contract.
+- Reported collection-repair truncation and other non-fatal ingest problems.
+- Hardened render caching, JSON response handling, and example asset budgets.
+
+Earlier pre-`v0.1.0` releases are available on the
+[tags page](https://github.com/hwasub/unofficial-notion-go/tags).
 
 ## License
 
