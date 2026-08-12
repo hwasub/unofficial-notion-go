@@ -59,7 +59,7 @@ production deployment.
 Install the current release explicitly:
 
 ```sh
-go get github.com/hwasub/unofficial-notion-go@v0.1.2
+go get github.com/hwasub/unofficial-notion-go@v0.1.3
 ```
 
 The following program fetches one page, renders its text and external content,
@@ -438,6 +438,17 @@ Before exposing rendered pages to users:
 
 This section summarizes user-visible changes. Follow the linked comparisons for
 the complete code history.
+
+### [v0.1.3](https://github.com/hwasub/unofficial-notion-go/tree/v0.1.3) — 2026-08-12
+
+- Required HTTPS for private Notion API base URLs, except literal loopback
+  addresses used by local tests.
+- Prevented authentication cookies from following redirects and disabled
+  ambient proxy inheritance for the default Notion HTTP client.
+- Added bounded HTTP server settings and root-scoped asset reads to runnable
+  examples, and restricted ephemeral cache directories to their owner.
+
+[Compare v0.1.2...v0.1.3](https://github.com/hwasub/unofficial-notion-go/compare/v0.1.2...v0.1.3)
 
 ### [v0.1.2](https://github.com/hwasub/unofficial-notion-go/tree/v0.1.2) — 2026-07-25
 
