@@ -68,11 +68,21 @@ func main() {
 	})))
 
 	log.Printf("listening on %s", *addr)
-	log.Fatal(http.ListenAndServe(*addr, mux))
+	server := &http.Server{
+		Addr:              *addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      120 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    16 << 10,
+	}
+	log.Fatal(server.ListenAndServe())
 }
 
 type app struct {
 	assetDir      string
+	assetRoot     *os.Root
 	client        *http.Client
 	maxAssets     int
 	maxTotalBytes int64
@@ -92,11 +102,16 @@ func newApp(assetDir string, maxAssets int, maxTotalBytes int64) (*app, error) {
 		}
 		assetDir = dir
 	}
-	if err := os.MkdirAll(assetDir, 0o755); err != nil {
+	if err := os.MkdirAll(assetDir, 0o700); err != nil {
+		return nil, err
+	}
+	root, err := os.OpenRoot(assetDir)
+	if err != nil {
 		return nil, err
 	}
 	return &app{
 		assetDir:      assetDir,
+		assetRoot:     root,
 		client:        &http.Client{Timeout: 30 * time.Second},
 		maxAssets:     maxAssets,
 		maxTotalBytes: maxTotalBytes,
@@ -293,7 +308,7 @@ func (a *app) handleAsset(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	data, err := os.ReadFile(filepath.Join(a.assetDir, key))
+	data, err := a.assetRoot.ReadFile(key)
 	if errors.Is(err, os.ErrNotExist) {
 		http.NotFound(w, r)
 		return

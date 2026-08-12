@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"sort"
@@ -54,6 +55,12 @@ func rejectRedirects(*http.Request, []*http.Request) error {
 	return http.ErrUseLastResponse
 }
 
+func defaultHTTPClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	return &http.Client{Timeout: 60 * time.Second, Transport: transport, CheckRedirect: rejectRedirects}
+}
+
 // Client talks to the private Notion API. Construct it with New; the zero value
 // is usable but New is preferred because it installs sane defaults. All fields
 // are private: configure the client through the With* Option functions.
@@ -75,6 +82,25 @@ func WithAPIBaseURL(value string) Option {
 	return func(c *Client) { c.apiBaseURL = value }
 }
 
+func validateAPIBaseURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("notionapi: API base URL must be an absolute origin/path without credentials, query, or fragment")
+	}
+	if strings.EqualFold(u.Scheme, "https") {
+		return nil
+	}
+	if !strings.EqualFold(u.Scheme, "http") {
+		return fmt.Errorf("notionapi: API base URL must use HTTPS")
+	}
+	host := strings.TrimSpace(u.Hostname())
+	ip := net.ParseIP(host)
+	if !strings.EqualFold(host, "localhost") && (ip == nil || !ip.IsLoopback()) {
+		return fmt.Errorf("notionapi: plaintext HTTP API base URL is allowed only for loopback testing")
+	}
+	return nil
+}
+
 // WithAuthToken sets the token_v2 cookie value used to authenticate requests.
 func WithAuthToken(value string) Option {
 	return func(c *Client) { c.authToken = value }
@@ -92,10 +118,9 @@ func WithUserTimeZone(value string) Option {
 }
 
 // WithHTTPClient overrides the *http.Client used for requests. A nil value is
-// ignored, leaving the default client in place. The client is used as-is,
-// including its redirect policy: set CheckRedirect (for example to return
-// http.ErrUseLastResponse, as the default client does) so the token_v2 cookie
-// is never re-sent to a redirect target.
+// ignored, leaving the default client in place. Fetch always overrides the
+// redirect policy on a per-call copy so the token_v2 cookie is never re-sent to
+// a redirect target.
 func WithHTTPClient(value *http.Client) Option {
 	return func(c *Client) {
 		if value != nil {
@@ -165,7 +190,7 @@ func New(opts ...Option) *Client {
 	c := &Client{
 		apiBaseURL:       "https://www.notion.so/api/v3",
 		userTimeZone:     "America/New_York",
-		httpClient:       &http.Client{Timeout: 60 * time.Second, CheckRedirect: rejectRedirects},
+		httpClient:       defaultHTTPClient(),
 		maxResponseBytes: defaultMaxResponseBytes,
 	}
 	for _, opt := range opts {
@@ -192,7 +217,7 @@ func (c *Client) normalized() *Client {
 		out.userTimeZone = "America/New_York"
 	}
 	if out.httpClient == nil {
-		out.httpClient = &http.Client{Timeout: 60 * time.Second, CheckRedirect: rejectRedirects}
+		out.httpClient = defaultHTTPClient()
 	}
 	if out.maxResponseBytes <= 0 {
 		out.maxResponseBytes = defaultMaxResponseBytes
@@ -680,6 +705,9 @@ func (c *Client) AddSignedURLs(ctx context.Context, recordMap map[string]any, co
 // violations are returned as *HTTPError with a machine-readable Code.
 func (c *Client) Fetch(ctx context.Context, endpoint string, body map[string]any, extraHeaders map[string]string, query url.Values) (map[string]any, error) {
 	c = c.normalized()
+	if err := validateAPIBaseURL(c.apiBaseURL); err != nil {
+		return nil, err
+	}
 	endpointURL := c.apiBaseURL + "/" + strings.TrimLeft(endpoint, "/")
 	if len(query) > 0 {
 		endpointURL += "?" + query.Encode()
@@ -702,7 +730,11 @@ func (c *Client) Fetch(ctx context.Context, endpoint string, body map[string]any
 	if c.activeUser != "" {
 		req.Header.Set("x-notion-active-user-header", c.activeUser)
 	}
-	resp, err := c.httpClient.Do(req)
+	// Options may supply a custom client for transport or test control, but the
+	// auth cookie must never be forwarded by following an upstream redirect.
+	httpClient := *c.httpClient
+	httpClient.CheckRedirect = rejectRedirects
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

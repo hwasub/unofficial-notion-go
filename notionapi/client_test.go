@@ -669,6 +669,49 @@ func TestFetchDoesNotFollowRedirects(t *testing.T) {
 	}
 }
 
+func TestFetchRejectsUnsafeAPIBaseURL(t *testing.T) {
+	for _, raw := range []string{
+		"http://example.com/api/v3",
+		"ftp://example.com/api/v3",
+		"https://user:pass@example.com/api/v3",
+		"https://example.com/api/v3?target=other",
+	} {
+		client := New(WithAPIBaseURL(raw))
+		if _, err := client.Fetch(context.Background(), "loadPageChunk", map[string]any{}, nil, nil); err == nil {
+			t.Errorf("Fetch accepted unsafe API base URL %q", raw)
+		}
+	}
+}
+
+func TestCustomHTTPClientCannotEnableRedirects(t *testing.T) {
+	var targetHits int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&targetHits, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer target.Close()
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	defer origin.Close()
+
+	client := New(WithAPIBaseURL(origin.URL), WithAuthToken("secret"), WithHTTPClient(&http.Client{}))
+	_, _ = client.Fetch(context.Background(), "loadPageChunk", map[string]any{}, nil, nil)
+	if atomic.LoadInt32(&targetHits) != 0 {
+		t.Fatal("custom HTTP client followed a redirect")
+	}
+}
+
+func TestDefaultHTTPClientIgnoresAmbientProxy(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:9999")
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:9999")
+	transport, ok := defaultHTTPClient().Transport.(*http.Transport)
+	if !ok || transport.Proxy != nil {
+		t.Fatalf("default Notion client uses ambient proxy: %#v", transport)
+	}
+}
+
 func TestFetchRejectsNonJSONContentType(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")

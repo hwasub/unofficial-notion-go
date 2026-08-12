@@ -247,7 +247,7 @@ func (c *DiskRenderCache) get(key string, countMiss bool) (string, bool) {
 
 func (c *DiskRenderCache) put(key string, value string) error {
 	path := c.pathFor(key)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
