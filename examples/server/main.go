@@ -32,6 +32,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hwasub/unofficial-notion-go/examples/internal/assethttp"
 	"github.com/hwasub/unofficial-notion-go/ingest"
 	"github.com/hwasub/unofficial-notion-go/notion"
 )
@@ -57,7 +58,7 @@ func main() {
 
 	srv := &server{
 		assets:               map[string][]byte{},
-		client:               &http.Client{Timeout: 30 * time.Second},
+		client:               assethttp.NewClient(),
 		cssPath:              *cssPath,
 		jsPath:               *jsPath,
 		maxAssetBytes:        defaultMaxAssetBytes,

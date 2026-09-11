@@ -80,6 +80,7 @@ func TestStoreAssetsRespectsTotalBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	a.client = upstream.Client()
 	assets := []ingest.AssetSnapshot{
 		{BlockID: "b1", Source: "s1", SignedURL: upstream.URL},
 		{BlockID: "b2", Source: "s2", SignedURL: upstream.URL},

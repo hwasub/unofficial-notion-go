@@ -33,7 +33,7 @@ type CacheStats struct {
 // renderCacheVersion is mixed into disk cache keys so renderer, sanitizer,
 // template-contract, and local JS/CSS contract changes can invalidate cached
 // Notion HTML without rewriting database rows.
-const renderCacheVersion = "v3"
+const renderCacheVersion = "v4"
 
 var (
 	renderCacheMu sync.RWMutex

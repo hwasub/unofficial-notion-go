@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/hwasub/unofficial-notion-go/internal/notionasset"
 	"github.com/hwasub/unofficial-notion-go/internal/notionid"
 	"github.com/hwasub/unofficial-notion-go/internal/notionrecordmap"
 )
@@ -83,6 +84,13 @@ func CollectAssets(recordMap NormalizedRecordMap, pageID string) []AssetSnapshot
 		}
 	}
 	assets = append(assets, customEmojiAssets(recordMap, pageID)...)
+	for i := range assets {
+		assets[i].Source = notionasset.Source(assets[i].Source)
+		if assets[i].SignedURL == "" || strings.HasPrefix(assets[i].SignedURL, "attachment:") {
+			blockID := strings.SplitN(assets[i].BlockID, ":", 2)[0]
+			assets[i].SignedURL = notionImageProxyURL(blocks[blockID], assets[i].Source)
+		}
+	}
 	return assets
 }
 
@@ -160,14 +168,14 @@ func blockAssets(recordMap NormalizedRecordMap, block map[string]any) []blockAss
 			assets = append(assets, blockAsset{
 				BlockID:   notionrecordmap.StringValue(block["id"]),
 				Source:    cover,
-				SignedURL: signedURLForBlock(recordMap, block),
+				SignedURL: notionasset.DownloadURL(signedURLForBlock(recordMap, block)),
 			})
 		}
 		if icon := notionHostedAssetSourceValue(format["page_icon"]); icon != "" {
 			assets = append(assets, blockAsset{
 				BlockID:   notionrecordmap.StringValue(block["id"]) + ":icon",
 				Source:    icon,
-				SignedURL: firstNonEmpty(signedURLForBlockRole(recordMap, block, "icon"), notionImageProxyURL(block, icon)),
+				SignedURL: firstNonEmpty(notionasset.DownloadURL(signedURLForBlockRole(recordMap, block, "icon")), notionImageProxyURL(block, icon)),
 			})
 		}
 		return assets
@@ -225,7 +233,7 @@ func signedURLForBlock(recordMap NormalizedRecordMap, block map[string]any) stri
 	compact := notionid.CompactID(id)
 	for _, key := range []string{id, normalized, compact} {
 		if value := recordMap.SignedURLs[key]; value != "" {
-			return value
+			return notionasset.DownloadURL(value)
 		}
 	}
 	return ""
@@ -237,7 +245,7 @@ func signedURLForBlockRole(recordMap NormalizedRecordMap, block map[string]any, 
 	compact := notionid.CompactID(id)
 	for _, key := range []string{id + ":" + role, normalized + ":" + role, compact + ":" + role} {
 		if value := recordMap.SignedURLs[key]; value != "" {
-			return value
+			return notionasset.DownloadURL(value)
 		}
 	}
 	return ""
@@ -344,9 +352,9 @@ func customEmojiAssets(recordMap NormalizedRecordMap, pageID string) []AssetSnap
 
 func signedURLForSource(recordMap NormalizedRecordMap, source string) string {
 	if value := recordMap.SignedURLs[source]; value != "" {
-		return value
+		return notionasset.DownloadURL(value)
 	}
-	return recordMap.SignedURLs[notionid.NormalizeBlockID(source)]
+	return notionasset.DownloadURL(recordMap.SignedURLs[notionid.NormalizeBlockID(source)])
 }
 
 func notionHostedAssetSourceValue(value any) string {
@@ -354,29 +362,18 @@ func notionHostedAssetSourceValue(value any) string {
 	if !ok {
 		return ""
 	}
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return ""
+	if strings.HasPrefix(raw, "/images/") || strings.HasPrefix(raw, "/icons/") {
+		return notionasset.Origin + raw
 	}
-	if strings.HasPrefix(trimmed, "attachment:") {
-		return trimmed
+	if strings.HasPrefix(raw, "attachment:") {
+		return notionasset.Source(raw)
 	}
-	if strings.HasPrefix(trimmed, "/images/") || strings.HasPrefix(trimmed, "/icons/") {
-		return "https://www.notion.so" + trimmed
-	}
-	parsed, err := url.Parse(trimmed)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return ""
-	}
-	if isNotionAssetURL(parsed) {
-		return trimmed
-	}
-	return ""
+	return notionasset.DownloadURL(raw)
 }
 
 func notionImageProxyURL(block map[string]any, source string) string {
-	parsed, err := url.Parse(source)
-	if err != nil || !isNotionAssetURL(parsed) {
+	source = notionasset.Source(source)
+	if source == "" {
 		return ""
 	}
 	id := notionid.NormalizeBlockID(block["id"])
@@ -384,31 +381,12 @@ func notionImageProxyURL(block map[string]any, source string) string {
 		return ""
 	}
 	encodedSource := strings.ReplaceAll(url.QueryEscape(source), "+", "%20")
-	out := "https://www.notion.so/image/" + encodedSource + "?table=block&id=" + url.QueryEscape(id)
+	out := notionasset.Origin + "/image/" + encodedSource + "?table=block&id=" + url.QueryEscape(id)
 	if spaceID := notionrecordmap.StringValue(block["space_id"]); spaceID != "" {
 		out += "&spaceId=" + url.QueryEscape(spaceID)
 	}
 	out += "&cache=v2"
 	return out
-}
-
-func isNotionAssetURL(parsed *url.URL) bool {
-	host := strings.ToLower(parsed.Hostname())
-	pathValue := strings.ToLower(parsed.EscapedPath())
-	if (host == "notion.so" || host == "www.notion.so") &&
-		(strings.HasPrefix(pathValue, "/images/") || strings.HasPrefix(pathValue, "/icons/")) {
-		return true
-	}
-	if (host == "s3.us-west-2.amazonaws.com" || host == "s3-us-west-2.amazonaws.com") &&
-		strings.Contains(pathValue, "/secure.notion-static.com/") {
-		return true
-	}
-	switch host {
-	case "secure.notion-static.com", "prod-files-secure.s3.us-west-2.amazonaws.com", "file.notion.so":
-		return true
-	default:
-		return false
-	}
 }
 
 func filenameFromURL(value string) string {

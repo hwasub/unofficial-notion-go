@@ -21,6 +21,9 @@ func renderCollectionView(out *strings.Builder, rm recordMap, blk block, text st
 		return
 	}
 	title := firstText(richText(coll.Name), firstText(text, input.t("notion.database_view", "Database view")))
+	if boolValue(blk.Format["hide_inline_collection_name"]) || boolValue(blk.Format["hide_linked_collection_name"]) {
+		title = ""
+	}
 	sourceClass := collectionViewSourceClass(blk.Type)
 	if len(views) == 1 {
 		view := views[0]
@@ -85,6 +88,9 @@ func renderCollectionViewSection(out *strings.Builder, rm recordMap, coll collec
 	if showViewName {
 		viewName = richText(view.View.Name)
 	}
+	if boolValue(view.View.Format["hide_linked_collection_name"]) || boolValue(view.View.Format["hide_inline_collection_name"]) {
+		title = ""
+	}
 	renderCollectionHead(out, title, viewName)
 	renderCollectionViewBody(out, rm, coll, view.View, view.Query, view.RowIDs, input)
 	renderCollectionAggregations(out, view.View, coll, view.Query, input)
@@ -92,6 +98,9 @@ func renderCollectionViewSection(out *strings.Builder, rm recordMap, coll collec
 }
 
 func renderCollectionHead(out *strings.Builder, title string, viewName string) {
+	if title == "" && viewName == "" {
+		return
+	}
 	out.WriteString(`<div class="notion-collection__head"><strong>`)
 	out.WriteString(title)
 	out.WriteString(`</strong>`)
@@ -142,7 +151,15 @@ func renderCollectionViewTabs(out *strings.Builder, rm recordMap, blk block, col
 		out.WriteString(`</span></button>`)
 	}
 	out.WriteString(`</div>`)
-	renderCollectionHead(out, title, "")
+	sharedTitle := true
+	for _, view := range views {
+		if boolValue(view.View.Format["hide_linked_collection_name"]) || boolValue(view.View.Format["hide_inline_collection_name"]) {
+			sharedTitle = false
+		}
+	}
+	if sharedTitle {
+		renderCollectionHead(out, title, "")
+	}
 	for i, view := range views {
 		buttonID, panelID := notionCollectionViewTabIDs(base, i)
 		viewType := sanitizeClassToken(firstNonEmpty(view.View.Type, "list"))
@@ -153,6 +170,9 @@ func renderCollectionViewTabs(out *strings.Builder, rm recordMap, blk block, col
 		out.WriteString(`" aria-labelledby="`)
 		out.WriteString(html.EscapeString(buttonID))
 		out.WriteString(`" data-notion-tab-panel>`)
+		if !sharedTitle && !boolValue(view.View.Format["hide_linked_collection_name"]) && !boolValue(view.View.Format["hide_inline_collection_name"]) {
+			renderCollectionHead(out, title, "")
+		}
 		renderCollectionViewBody(out, rm, coll, view.View, view.Query, view.RowIDs, input)
 		renderCollectionAggregations(out, view.View, coll, view.Query, input)
 		out.WriteString(`</section>`)
@@ -189,7 +209,7 @@ func collectionViewLabel(view collectionView, index int) string {
 
 func renderCollectionViewBody(out *strings.Builder, rm recordMap, coll collection, view collectionView, query collectionQuery, rowIDs []string, input RenderInput) {
 	if len(rowIDs) == 0 {
-		renderCollectionPlaceholder(out, firstText(richText(coll.Name), input.t("notion.database_view", "Database view")), input)
+		renderCollectionPlaceholder(out, input.t("notion.database_view", "Database view"), input)
 		return
 	}
 	viewType := sanitizeClassToken(firstNonEmpty(view.Type, "list"))
@@ -222,9 +242,9 @@ func renderCollectionViewBody(out *strings.Builder, rm recordMap, coll collectio
 		renderCollectionTimeline(out, rm, coll, view, rowIDs, properties, input)
 	default:
 		if len(groups) > 0 {
-			renderCollectionGroupedCards(out, rm, coll, groups, properties, viewType, input)
+			renderCollectionGroupedCards(out, rm, coll, groups, properties, viewType, input, collectionCoverConfig(view))
 		} else {
-			renderCollectionCards(out, rm, coll, rowIDs, properties, viewType, input)
+			renderCollectionCards(out, rm, coll, rowIDs, properties, viewType, input, collectionCoverConfig(view))
 		}
 	}
 }
@@ -343,29 +363,29 @@ func renderCollectionGroupedTable(out *strings.Builder, rm recordMap, coll colle
 	})
 }
 
-func renderCollectionCards(out *strings.Builder, rm recordMap, coll collection, rowIDs []string, properties []string, viewType string, input RenderInput) {
+func renderCollectionCards(out *strings.Builder, rm recordMap, coll collection, rowIDs []string, properties []string, viewType string, input RenderInput, covers ...map[string]any) {
 	out.WriteString(`<div class="notion-collection__cards">`)
 	for _, id := range rowIDs {
 		row, ok := rm.Block[NormalizeID(id)]
 		if !ok {
 			continue
 		}
-		renderCollectionCard(out, rm, row, coll, properties, viewType, input)
+		renderCollectionCard(out, rm, row, coll, properties, viewType, input, covers...)
 	}
 	out.WriteString(`</div>`)
 }
 
-func renderCollectionGroupedCards(out *strings.Builder, rm recordMap, coll collection, groups []collectionGroup, properties []string, viewType string, input RenderInput) {
+func renderCollectionGroupedCards(out *strings.Builder, rm recordMap, coll collection, groups []collectionGroup, properties []string, viewType string, input RenderInput, covers ...map[string]any) {
 	renderCollectionGroups(out, groups, func(rowIDs []string) {
-		renderCollectionCards(out, rm, coll, rowIDs, properties, viewType, input)
+		renderCollectionCards(out, rm, coll, rowIDs, properties, viewType, input, covers...)
 	})
 }
 
-func renderCollectionCard(out *strings.Builder, rm recordMap, row block, coll collection, properties []string, viewType string, input RenderInput) {
+func renderCollectionCard(out *strings.Builder, rm recordMap, row block, coll collection, properties []string, viewType string, input RenderInput, covers ...map[string]any) {
 	out.WriteString(`<article class="notion-collection-card notion-collection-card--`)
 	out.WriteString(html.EscapeString(viewType))
 	out.WriteString(`">`)
-	if cover := collectionCoverHTML(rm, row, input); cover != "" {
+	if cover := collectionCoverHTML(rm, row, input, covers...); cover != "" {
 		out.WriteString(cover)
 	}
 	title := collectionPropertyHTML(rm, row, coll, "title", input)
@@ -865,4 +885,9 @@ func collectionRowIDs(query collectionQuery) []string {
 		}
 	}
 	return dedupeStrings(out)
+}
+
+func collectionCoverConfig(view collectionView) map[string]any {
+	value, _ := view.Format["gallery_cover"].(map[string]any)
+	return value
 }

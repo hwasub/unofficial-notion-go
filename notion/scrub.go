@@ -2,7 +2,10 @@ package notion
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
+
+	"github.com/hwasub/unofficial-notion-go/internal/notionasset"
 )
 
 // ScrubSnapshotForStorage returns a copy of snapshot safe to persist: it
@@ -29,6 +32,7 @@ func ScrubSnapshotForStorage(snapshot *Snapshot) (*Snapshot, error) {
 		clean.BlockID = normalizeAssetKey(clean.BlockID)
 		clean.PageID = NormalizeID(clean.PageID)
 		clean.SignedURL = ""
+		clean.Source = notionasset.ForStorage(clean.Source)
 		out.Assets[i] = clean
 	}
 	out.RootPageID = NormalizeID(out.RootPageID)
@@ -44,7 +48,11 @@ func scrubRecordMapSignedURLs(recordMap json.RawMessage) (json.RawMessage, error
 		return nil, err
 	}
 	delete(raw, "signed_urls")
-	return json.Marshal(raw)
+	clean, err := scrubAssetValues(raw, 0)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(clean)
 }
 
 func normalizeAssetKey(key string) string {
@@ -58,4 +66,31 @@ func normalizeAssetKey(key string) string {
 		return base
 	}
 	return base + ":" + suffix
+}
+
+func scrubAssetValues(value any, depth int) (any, error) {
+	if depth > 128 {
+		return nil, errors.New("snapshot exceeds storage nesting limit")
+	}
+	switch v := value.(type) {
+	case string:
+		return notionasset.ForStorage(v), nil
+	case map[string]any:
+		for k, child := range v {
+			clean, err := scrubAssetValues(child, depth+1)
+			if err != nil {
+				return nil, err
+			}
+			v[k] = clean
+		}
+	case []any:
+		for i, child := range v {
+			clean, err := scrubAssetValues(child, depth+1)
+			if err != nil {
+				return nil, err
+			}
+			v[i] = clean
+		}
+	}
+	return value, nil
 }

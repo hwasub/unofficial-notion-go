@@ -19,7 +19,7 @@ import (
 
 func TestNewAppliesDefaultsThenOptions(t *testing.T) {
 	client := New()
-	if client.apiBaseURL != "https://www.notion.so/api/v3" {
+	if client.apiBaseURL != "https://app.notion.com/api/v3" {
 		t.Fatalf("apiBaseURL = %q", client.apiBaseURL)
 	}
 	if client.userTimeZone != "America/New_York" {
@@ -60,7 +60,7 @@ func TestNewAppliesDefaultsThenOptions(t *testing.T) {
 
 func TestZeroValueClientNormalizesDefaults(t *testing.T) {
 	c := (&Client{}).normalized()
-	if c.apiBaseURL != "https://www.notion.so/api/v3" {
+	if c.apiBaseURL != "https://app.notion.com/api/v3" {
 		t.Fatalf("apiBaseURL = %q", c.apiBaseURL)
 	}
 	if c.userTimeZone != "America/New_York" {
@@ -100,7 +100,7 @@ func TestClientConcurrentUseIsRaceFree(t *testing.T) {
 // A nil *Client falls back to a default client rather than panicking.
 func TestNilClientUsesDefaults(t *testing.T) {
 	var c *Client
-	if got := c.normalized().apiBaseURL; got != "https://www.notion.so/api/v3" {
+	if got := c.normalized().apiBaseURL; got != "https://app.notion.com/api/v3" {
 		t.Fatalf("nil client apiBaseURL = %q", got)
 	}
 }
@@ -943,5 +943,32 @@ func updateMaxInt32(target *int32, value int32) {
 		if value <= current || atomic.CompareAndSwapInt32(target, current, value) {
 			return
 		}
+	}
+}
+
+func TestFetchUserAgentDefaultAndOverride(t *testing.T) {
+	for _, custom := range []string{"", "consumer/1.0"} {
+		t.Run(custom, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				want := custom
+				if want == "" {
+					want = "unofficial-notion-go (+https://github.com/hwasub/unofficial-notion-go)"
+				}
+				if got := r.UserAgent(); got != want {
+					t.Errorf("User-Agent = %q, want %q", got, want)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{}`))
+			}))
+			defer server.Close()
+			headers := map[string]string{}
+			if custom != "" {
+				headers["User-Agent"] = custom
+			}
+			_, err := New(WithAPIBaseURL(server.URL)).Fetch(context.Background(), "loadPageChunk", nil, headers, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }

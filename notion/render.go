@@ -163,6 +163,7 @@ type collectionProperty struct {
 	Prefix       string `json:"prefix"` // unique_id prefix ("TASK" renders as TASK-12)
 	Formula      map[string]any
 	OptionColors map[string]string
+	OptionValues map[string]bool
 }
 
 func (p *collectionProperty) UnmarshalJSON(data []byte) error {
@@ -179,6 +180,16 @@ func (p *collectionProperty) UnmarshalJSON(data []byte) error {
 		p.Prefix = firstNonEmpty(p.Prefix, stringValue(child["prefix"]))
 	}
 	p.OptionColors = collectionOptionColors(raw["options"])
+	if options, ok := raw["options"].([]any); ok {
+		p.OptionValues = map[string]bool{}
+		for _, value := range options {
+			if option, ok := value.(map[string]any); ok {
+				if label, ok := option["value"].(string); ok {
+					p.OptionValues[label] = true
+				}
+			}
+		}
+	}
 	if child, ok := raw["formula"].(map[string]any); ok {
 		p.Formula = child
 		p.ResultType = firstNonEmpty(p.ResultType, stringValue(child["result_type"]), stringValue(child["value_type"]), stringValue(child["type"]))

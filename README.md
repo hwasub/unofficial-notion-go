@@ -59,7 +59,7 @@ production deployment.
 Install the current release explicitly:
 
 ```sh
-go get github.com/hwasub/unofficial-notion-go@v0.1.3
+go get github.com/hwasub/unofficial-notion-go@v0.1.4
 ```
 
 The following program fetches one page, renders its text and external content,
@@ -296,6 +296,19 @@ URLs that should not be cached or statically referenced, and the unofficial web
 API follows the same practical constraint. Treat every `AssetSnapshot.SignedURL`
 as an immediate download URL, not as a URL to persist or expose in public HTML.
 
+Current `file.notion.com`, `img.notionusercontent.com`, and Notion image-proxy
+URLs are normalized to stable identities where possible. `AssetSnapshot.Source`
+may therefore be an `attachment:` identity rather than a downloadable URL.
+Use `SignedURL` for immediate downloads and `Source` for mapping stored assets.
+Unknown temporary Notion URLs without a recoverable identity are removed during
+storage scrubbing; external URLs retain their query parameters.
+
+The renderer performs no network requests. Authentication, storage, delivery,
+and application-specific access controls remain the caller's responsibility.
+The runnable examples use a public-HTTPS-only asset downloader with DNS and
+redirect checks and do not inherit proxy environment variables. Applications
+with different network requirements should supply their own download policy.
+
 The intended asset flow is:
 
 1. Call `ingest.FetchSnapshot` to obtain a `Snapshot`.
@@ -438,6 +451,44 @@ Before exposing rendered pages to users:
 
 This section summarizes user-visible changes. Follow the linked comparisons for
 the complete code history.
+
+### [v0.1.4](https://github.com/hwasub/unofficial-notion-go/tree/v0.1.4) — 2026-09-11
+
+- Recognize current Notion file, image CDN, and image-proxy URLs, recover stable
+  attachment identities, and bound nested proxy unwrapping. Signing requests
+  use stable sources while retaining aliases for caller asset mappings.
+- Validate signed download URLs for page covers, icons, and block assets.
+  Storage scrubbing now removes recognized temporary Notion credentials from
+  nested record-map values and asset sources without changing the input
+  snapshot or removing external URL query parameters.
+- Use `https://app.notion.com/api/v3` by default and send an identifiable
+  `User-Agent`. Custom API endpoints and explicit header overrides remain
+  supported; authentication does not follow redirects.
+- Honor inline and linked database title visibility, including per-view
+  visibility. Gallery covers support page content, first page content, page
+  cover, property, and no-cover settings.
+- Hide select and multiselect values absent from an explicitly supplied schema
+  option list. Preserve raw property data and retain legacy rendering when
+  schema options are missing.
+- Invalidate older disk-rendered HTML by advancing the render-cache version.
+- Harden asset downloads in all runnable examples: require public HTTPS
+  destinations, check resolved addresses and redirects, and disable ambient
+  proxies. This policy belongs to the examples, not to the renderer.
+- Add regression coverage for current asset formats, credential scrubbing,
+  malicious download URLs, gallery covers, hidden titles, and stale options.
+
+**Upgrade notes:** Public Go signatures and the snapshot wire schema remain
+compatible, and no external Go dependencies were added. Rebuild `AssetURLs`
+from the newly fetched asset identities when refreshing content. Previously
+stored snapshots are not rewritten automatically; scrub or refetch them before
+republishing. Custom API origin allowlists must permit `app.notion.com`.
+
+The compatibility review references upstream
+[react-notion-x v8.0.8](https://github.com/NotionX/react-notion-x/releases/tag/v8.0.8)
+and its current asset and collection behavior. Application infrastructure and
+storage integrations remain outside this library.
+
+[Compare v0.1.3...v0.1.4](https://github.com/hwasub/unofficial-notion-go/compare/v0.1.3...v0.1.4)
 
 ### [v0.1.3](https://github.com/hwasub/unofficial-notion-go/tree/v0.1.3) — 2026-08-12
 

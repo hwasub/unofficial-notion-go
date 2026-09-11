@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hwasub/unofficial-notion-go/internal/notionasset"
 	"github.com/hwasub/unofficial-notion-go/internal/notionid"
 	"github.com/hwasub/unofficial-notion-go/internal/notionrecordmap"
 )
@@ -77,7 +78,7 @@ type Client struct {
 type Option func(*Client)
 
 // WithAPIBaseURL sets the Notion API base URL (default
-// "https://www.notion.so/api/v3"). A trailing "/" is trimmed.
+// "https://app.notion.com/api/v3"). A trailing "/" is trimmed.
 func WithAPIBaseURL(value string) Option {
 	return func(c *Client) { c.apiBaseURL = value }
 }
@@ -188,7 +189,7 @@ type SignedURLResponse struct {
 // are supplied.
 func New(opts ...Option) *Client {
 	c := &Client{
-		apiBaseURL:       "https://www.notion.so/api/v3",
+		apiBaseURL:       "https://app.notion.com/api/v3",
 		userTimeZone:     "America/New_York",
 		httpClient:       defaultHTTPClient(),
 		maxResponseBytes: defaultMaxResponseBytes,
@@ -210,7 +211,7 @@ func (c *Client) normalized() *Client {
 	}
 	out := *c
 	if strings.TrimSpace(out.apiBaseURL) == "" {
-		out.apiBaseURL = "https://www.notion.so/api/v3"
+		out.apiBaseURL = "https://app.notion.com/api/v3"
 	}
 	out.apiBaseURL = strings.TrimRight(out.apiBaseURL, "/")
 	if strings.TrimSpace(out.userTimeZone) == "" {
@@ -624,7 +625,9 @@ func (c *Client) AddSignedURLs(ctx context.Context, recordMap map[string]any, co
 	targets := []signTarget{}
 	targetByRequest := map[string]int{}
 	addTarget := func(blockID, source string, keys ...string) {
-		if blockID == "" || !signableFileSource(source) {
+		originalSource := source
+		source = notionasset.SigningSource(source)
+		if blockID == "" || source == "" {
 			return
 		}
 		requestKey := blockID + "\x00" + source
@@ -637,7 +640,7 @@ func (c *Client) AddSignedURLs(ctx context.Context, recordMap map[string]any, co
 				URL:              source,
 			}})
 		}
-		targets[index].Keys = appendUniqueStrings(targets[index].Keys, append([]string{source}, keys...)...)
+		targets[index].Keys = appendUniqueStrings(targets[index].Keys, append([]string{source, originalSource}, keys...)...)
 	}
 	for _, blockID := range contentBlockIDs {
 		blockKey := recordMapBlockKey(blocks, blockID)
@@ -721,6 +724,7 @@ func (c *Client) Fetch(ctx context.Context, endpoint string, body map[string]any
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "unofficial-notion-go (+https://github.com/hwasub/unofficial-notion-go)")
 	for key, value := range extraHeaders {
 		req.Header.Set(key, value)
 	}
@@ -1124,28 +1128,7 @@ func signedBlockType(blockType string, _ map[string]any) bool {
 	}
 }
 
-func signableFileSource(source string) bool {
-	source = strings.TrimSpace(source)
-	if source == "" {
-		return false
-	}
-	if strings.HasPrefix(source, "attachment:") {
-		return true
-	}
-	parsed, err := url.Parse(source)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return false
-	}
-	host := strings.ToLower(parsed.Hostname())
-	switch host {
-	case "secure.notion-static.com", "prod-files-secure.s3.us-west-2.amazonaws.com", "prod-files-secure":
-		return true
-	case "s3.us-west-2.amazonaws.com", "s3-us-west-2.amazonaws.com":
-		return strings.Contains(strings.ToLower(parsed.EscapedPath()), "/secure.notion-static.com/")
-	default:
-		return false
-	}
-}
+func signableFileSource(source string) bool { return notionasset.SigningSource(source) != "" }
 
 func richTextFileSources(properties map[string]any) []string {
 	keys := make([]string, 0, len(properties))

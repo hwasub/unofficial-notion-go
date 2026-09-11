@@ -4,6 +4,8 @@ import (
 	"net/url"
 	"path"
 	"strings"
+
+	"github.com/hwasub/unofficial-notion-go/internal/notionasset"
 )
 
 func safeButtonURL(raw string) string {
@@ -73,11 +75,17 @@ func assetAliasURL(input RenderInput, key string) string {
 	if value := input.AssetURLs[key]; strings.TrimSpace(value) != "" {
 		return value
 	}
+	if value := input.AssetURLs[notionasset.Source(key)]; value != "" {
+		return value
+	}
 	alias := assetCanonicalSourceAlias(key)
 	if alias == "" || alias == key {
 		return ""
 	}
-	return input.AssetURLs[alias]
+	if value := input.AssetURLs[alias]; value != "" {
+		return value
+	}
+	return input.AssetURLs[notionasset.Source(key)]
 }
 
 func assetCanonicalSourceAlias(value string) string {
@@ -177,7 +185,7 @@ func isNotionHostedURL(raw string) bool {
 		return false
 	}
 	host := strings.ToLower(parsed.Hostname())
-	return host == "notion.so" || host == "www.notion.so" || host == "notion.site" ||
+	return notionasset.IsAsset(raw) || notionasset.IsHost(host) || host == "notion.so" || host == "www.notion.so" || host == "notion.site" ||
 		strings.HasSuffix(host, ".notion.so") || strings.HasSuffix(host, ".notion.site") ||
 		host == "secure.notion-static.com" || host == "prod-files-secure.s3.us-west-2.amazonaws.com" ||
 		host == "s3-us-west-2.amazonaws.com" ||
@@ -185,16 +193,11 @@ func isNotionHostedURL(raw string) bool {
 }
 
 func isNotionAssetURL(raw string) bool {
-	parsed, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil {
-		return false
+	if notionasset.IsAsset(raw) {
+		return true
 	}
-	host := strings.ToLower(parsed.Hostname())
-	return host == "secure.notion-static.com" ||
-		host == "prod-files-secure.s3.us-west-2.amazonaws.com" ||
-		host == "s3-us-west-2.amazonaws.com" ||
-		host == "s3.us-west-2.amazonaws.com" ||
-		host == "file.notion.so"
+	u, err := url.Parse(raw)
+	return err == nil && (u.Hostname() == "s3.us-west-2.amazonaws.com" || u.Hostname() == "s3-us-west-2.amazonaws.com")
 }
 
 func pathSegments(value string) []string {

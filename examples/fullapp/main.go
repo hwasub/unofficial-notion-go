@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hwasub/unofficial-notion-go/examples/internal/assethttp"
 	"github.com/hwasub/unofficial-notion-go/ingest"
 	"github.com/hwasub/unofficial-notion-go/notion"
 )
@@ -112,7 +113,7 @@ func newApp(assetDir string, maxAssets int, maxTotalBytes int64) (*app, error) {
 	return &app{
 		assetDir:      assetDir,
 		assetRoot:     root,
-		client:        &http.Client{Timeout: 30 * time.Second},
+		client:        assethttp.NewClient(),
 		maxAssets:     maxAssets,
 		maxTotalBytes: maxTotalBytes,
 	}, nil

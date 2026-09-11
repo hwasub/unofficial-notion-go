@@ -222,7 +222,45 @@ func formatUnixTimestamp(value float64) string {
 	return time.Unix(int64(value), 0).UTC().Format(time.RFC3339)
 }
 
-func collectionCoverHTML(rm recordMap, row block, input RenderInput) string {
+func collectionCoverHTML(rm recordMap, row block, input RenderInput, covers ...map[string]any) string {
+	if len(covers) > 0 && covers[0] != nil {
+		cover := covers[0]
+		kind := stringValue(cover["type"])
+		switch kind {
+		case "none":
+			return ""
+		case "page_content", "page_content_first":
+			seen := map[string]bool{}
+			var visit func(block) string
+			visit = func(current block) string {
+				if seen[current.ID] || len(seen) >= 128 {
+					return ""
+				}
+				seen[current.ID] = true
+				if current.Type == "image" {
+					src := resolvedAssetSourceURL(input, rm, current.ID, plainText(current.Properties["source"]))
+					if src != "" {
+						return collectionCoverImage(src)
+					}
+				}
+				for _, id := range current.Content {
+					if child, ok := rm.Block[NormalizeID(id)]; ok {
+						if image := visit(child); image != "" {
+							return image
+						}
+					}
+				}
+				return ""
+			}
+			return visit(row)
+		case "property":
+			source := plainText(row.Properties[stringValue(cover["property"])])
+			if src := resolvedAssetAliasURL(input, rm, source); src != "" {
+				return collectionCoverImage(src)
+			}
+			return ""
+		}
+	}
 	cover := stringValue(row.Format["page_cover"])
 	if src := resolvedAssetURL(input, rm, row.ID, "cover", cover); src != "" {
 		var b strings.Builder
@@ -231,7 +269,7 @@ func collectionCoverHTML(rm recordMap, row block, input RenderInput) string {
 		b.WriteString(`</div>`)
 		return b.String()
 	}
-	if icon := pageIconHTML(rm, row, input); icon != "" {
+	if icon := pageIconHTML(rm, row, input); icon != "" && (len(covers) == 0 || covers[0] == nil) {
 		return `<div class="notion-collection-card__cover notion-collection-card__cover--icon">` + icon + `</div>`
 	}
 	return ""
@@ -254,6 +292,9 @@ func renderCollectionPills(labels []string, schemas ...collectionProperty) strin
 	var b strings.Builder
 	b.WriteString(`<span class="notion-property-pills">`)
 	for _, label := range labels {
+		if len(schemas) > 0 && (schemas[0].Type == "select" || schemas[0].Type == "multi_select") && schemas[0].OptionValues != nil && !schemas[0].OptionValues[label] {
+			continue
+		}
 		classes := []string{"notion-property-pill"}
 		if colorClass := collectionPillColorClass(label, schemas...); colorClass != "" {
 			classes = append(classes, colorClass)
@@ -813,4 +854,12 @@ func fileLabel(raw string) string {
 		label = decoded
 	}
 	return label
+}
+
+func collectionCoverImage(src string) string {
+	var out strings.Builder
+	out.WriteString(`<div class="notion-collection-card__cover">`)
+	renderLightboxImage(&out, "notion-collection-card__cover-link", src, "")
+	out.WriteString(`</div>`)
+	return out.String()
 }

@@ -33,8 +33,8 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
-	"time"
 
+	"github.com/hwasub/unofficial-notion-go/examples/internal/assethttp"
 	"github.com/hwasub/unofficial-notion-go/ingest"
 	"github.com/hwasub/unofficial-notion-go/notion"
 )
@@ -138,7 +138,7 @@ func run(pageURL, outDir, cssPath, jsPath string, maxAssets int) error {
 // expects, plus the number of assets successfully downloaded. Assets without a
 // signed URL (signing failed upstream) are skipped.
 func downloadAssets(ctx context.Context, assets []ingest.AssetSnapshot, dir string) (map[string]string, int) {
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := assethttp.NewClient()
 	urls := make(map[string]string, len(assets)*2)
 	downloaded := 0
 	for i, asset := range assets {
