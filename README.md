@@ -33,7 +33,7 @@ and compliance with Notion's terms.
 
 ### Requirements
 
-- Go 1.25 or newer.
+- Go 1.27 or newer.
 - A public Notion page URL. Confirm that the page opens in a private browser
   window without signing in.
 - Network access to `www.notion.so`.
@@ -59,7 +59,7 @@ production deployment.
 Install the current release explicitly:
 
 ```sh
-go get github.com/hwasub/unofficial-notion-go@v0.1.4
+go get github.com/hwasub/unofficial-notion-go@v0.2.0
 ```
 
 The following program fetches one page, renders its text and external content,
@@ -451,6 +451,19 @@ Before exposing rendered pages to users:
 
 This section summarizes user-visible changes. Follow the linked comparisons for
 the complete code history.
+
+### [v0.2.0](https://github.com/hwasub/unofficial-notion-go/tree/v0.2.0) — 2026-10-05
+
+- Require Go 1.27 or newer. The module's `go` directive is now `1.27.0`, and
+  the pinned development toolchain is Go 1.27.1.
+- Run CI tests and lint (gofmt, `go vet`, staticcheck) on Go 1.27 only.
+
+**Upgrade notes:** This release contains no API, markup, or snapshot schema
+changes. Upgrade your toolchain to Go 1.27 before updating; projects that must
+stay on an older Go release should remain on v0.1.4. No external Go
+dependencies were added.
+
+[Compare v0.1.4...v0.2.0](https://github.com/hwasub/unofficial-notion-go/compare/v0.1.4...v0.2.0)
 
 ### [v0.1.4](https://github.com/hwasub/unofficial-notion-go/tree/v0.1.4) — 2026-09-11
 
